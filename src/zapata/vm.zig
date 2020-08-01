@@ -10,11 +10,13 @@ pub const ErrorType = enum { Compile, Runtime, StackTrace };
 
 pub const WriteFn = fn (*Vm, []const u8) void;
 pub const ErrorFn = fn (*Vm, ErrorType, ?[]const u8, ?u32, []const u8) void;
+pub const LoadModuleFn = fn (*Vm, []const u8) []u8;
 
 pub const Configuration = struct {
     const Self = @This();
 
     allocator: ?*Allocator = null,
+    loadModuleFn: ?LoadModuleFn = null,
     writeFn: ?WriteFn = null,
     errorFn: ?ErrorFn = null,
     initialHeapSize: ?usize = null,
@@ -28,6 +30,10 @@ pub const Configuration = struct {
 
         if (self.allocator) |a| {
             cfg.reallocateFn = allocatorWrapper;
+        }
+
+        if (self.loadModuleFn) |f| {
+            cfg.loadModuleFn = loadModuleWrapper;
         }
 
         if (self.writeFn) |f| {
@@ -87,6 +93,12 @@ pub const Configuration = struct {
         };
         errorFn(vm, err_type, if (cmodule != null) cStrToSlice(cmodule) else null, if (cline >= 0) @intCast(u32, cline) else null, cStrToSlice(cmessage));
     }
+
+    fn loadModuleWrapper(cvm: ?*wren.Vm, cname: [*c]const u8) callconv(.C) [*c]u8 {
+        const vm = zigVmFromCVm(cvm);
+        const loadModuleFn = vm.loadModuleFn orelse std.debug.panic("loadModuleWrapper must only be installed when loadModuleFn is set", .{});
+        return @ptrCast([*c]u8, loadModuleFn(vm, cStrToSlice(cname)));
+    }
 };
 
 pub const Vm = struct {
@@ -94,6 +106,7 @@ pub const Vm = struct {
 
     vm: *wren.Vm,
     allocator: ?*Allocator,
+    loadModuleFn: ?LoadModuleFn,
     writeFn: ?WriteFn,
     errorFn: ?ErrorFn,
     user_data_ptr: ?usize,
@@ -102,6 +115,7 @@ pub const Vm = struct {
     pub fn initInPlace(comptime UserData: type, result: *Self, vm: *wren.Vm, conf: Configuration, user_data: ?*UserData) void {
         result.vm = vm;
         result.allocator = conf.allocator;
+        result.loadModuleFn = conf.loadModuleFn;
         result.writeFn = conf.writeFn;
         result.errorFn = conf.errorFn;
         result.user_data_ptr = if (@sizeOf(UserData) > 0 and user_data != null) @ptrToInt(user_data) else null;
