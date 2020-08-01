@@ -13,6 +13,9 @@ pub const Configuration = struct {
 
     allocator: ?*Allocator = null,
     writeFn: ?WriteFn = null,
+    initialHeapSize: ?usize = null,
+    minHeapSize: ?usize = null,
+    heapGrowthPercent: ?u8 = null,
 
     // This will be much nicer when https://github.com/ziglang/zig/issues/2765 is done.
     pub fn newVmInPlace(self: Self, comptime UserData: type, result: *Vm, user_data: ?*UserData) WrenError!void {
@@ -25,6 +28,16 @@ pub const Configuration = struct {
 
         if (self.writeFn) |f| {
             cfg.writeFn = writeWrapper;
+        }
+
+        if (self.initialHeapSize) |i| {
+            cfg.initialHeapSize = i;
+        }
+        if (self.minHeapSize) |i| {
+            cfg.minHeapSize = i;
+        }
+        if (self.heapGrowthPercent) |i| {
+            cfg.heapGrowthPercent = i;
         }
 
         // This is slightly hacky, but even the VM creation needs the
