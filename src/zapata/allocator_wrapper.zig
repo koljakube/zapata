@@ -2,8 +2,6 @@ const std = @import("std");
 const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
 
-const wren = @import("./zabata/wren.zig");
-
 const Vm = @import("./vm.zig").Vm;
 
 // Zig's allocators operate on slices, the wrapped C library just passes a

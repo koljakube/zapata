@@ -1,5 +1,5 @@
-usingnamespace @import("./zabata.zig");
+usingnamespace @import("./zapata.zig");
 
 test "" {
-    _ = @import("./zabata.zig");
+    _ = @import("./zapata.zig");
 }
