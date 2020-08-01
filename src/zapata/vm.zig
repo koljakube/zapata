@@ -8,9 +8,27 @@ const allocatorWrapper = @import("./allocator_wrapper.zig").allocatorWrapper;
 
 pub const ErrorType = enum { Compile, Runtime, StackTrace };
 
+pub fn AllocatedMemory(comptime T: type) type {
+    return struct {
+        const Self = @This();
+
+        allocator: *Allocator,
+        data: []T,
+
+        pub fn init(allocator: *Allocator, len: usize) Self {
+            // In the future, not panicking might be nice. But failing
+            // allocations here put the VM in an irrecoverable state.
+            const data = allocator.alloc(T, len) catch |e| std.debug.panic("could not allocate memory but really need it", .{});
+            return Self{ .allocator = allocator, .data = data };
+        }
+    };
+}
+
+const AllocatedBytes = AllocatedMemory(u8);
+
 pub const WriteFn = fn (*Vm, []const u8) void;
 pub const ErrorFn = fn (*Vm, ErrorType, ?[]const u8, ?u32, []const u8) void;
-pub const LoadModuleFn = fn (*Vm, []const u8) []u8;
+pub const LoadModuleFn = fn (*Vm, []const u8) AllocatedBytes;
 
 pub const Configuration = struct {
     const Self = @This();
@@ -97,7 +115,9 @@ pub const Configuration = struct {
     fn loadModuleWrapper(cvm: ?*wren.Vm, cname: [*c]const u8) callconv(.C) [*c]u8 {
         const vm = zigVmFromCVm(cvm);
         const loadModuleFn = vm.loadModuleFn orelse std.debug.panic("loadModuleWrapper must only be installed when loadModuleFn is set", .{});
-        return @ptrCast([*c]u8, loadModuleFn(vm, cStrToSlice(cname)));
+        const mem = loadModuleFn(vm, cStrToSlice(cname));
+        assert(mem.allocator == if (vm.allocator == null) std.heap.c_allocator else vm.allocator);
+        return mem.data.ptr;
     }
 };
 
@@ -179,6 +199,27 @@ test "writeFn" {
     testing.expect(!testPrintSuccess);
     try vm.interpret("main", "System.print(\"I am running in a VM!\")");
     testing.expect(testPrintSuccess);
+}
+
+var testLoadModuleSuccess = false;
+fn testLoadModule(vm: *Vm, name: []const u8) AllocatedBytes {
+    testing.expect(std.mem.eql(u8, name, "my_module"));
+    testLoadModuleSuccess = true;
+    const source = "System.print(\"I am running in a VM!\")";
+    var mem = AllocatedMemory(u8).init(std.heap.c_allocator, source.len + 1);
+    std.mem.copy(u8, mem.data, source);
+    return mem;
+}
+
+test "loadModuleFn" {
+    var config = Configuration{};
+    config.loadModuleFn = testLoadModule;
+
+    var vm: Vm = undefined;
+    try config.newVmInPlace(EmptyUserData, &vm, null);
+    defer vm.deinit();
+    try vm.interpret("main", "import \"my_module\"");
+    testing.expect(testLoadModuleSuccess == true);
 }
 
 var testCompileErrorCount: i32 = 0;
