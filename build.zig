@@ -6,13 +6,15 @@ pub fn build(b: *Builder) void {
     lib.setBuildMode(mode);
     lib.install();
 
-    lib.addIncludeDir("/usr/local/include");
+    lib.addIncludeDir("vendor/wren/include");
+    lib.addLibPath("vendor/wren/lib");
     lib.linkSystemLibrary("wren");
 
     var main_tests = b.addTest("src/main.zig");
     main_tests.setBuildMode(mode);
 
-    main_tests.addIncludeDir("/usr/local/include");
+    main_tests.addIncludeDir("vendor/wren/include");
+    main_tests.addLibPath("vendor/wren/lib");
     main_tests.linkSystemLibrary("wren");
 
     const test_step = b.step("test", "Run library tests");
