@@ -6,7 +6,7 @@ const wren = @import("./wren.zig");
 const WrenError = @import("./error.zig").WrenError;
 const allocatorWrapper = @import("./allocator_wrapper.zig").allocatorWrapper;
 
-pub const ErrorType = enum { Compile, Runtime, Stacktrace };
+pub const ErrorType = enum { Compile, Runtime, StackTrace };
 
 pub const WriteFn = fn (*Vm, []const u8) void;
 pub const ErrorFn = fn (*Vm, ErrorType, ?[]const u8, ?u32, []const u8) void;
@@ -82,7 +82,7 @@ pub const Configuration = struct {
         const err_type: ErrorType = switch (cerr_type) {
             .WREN_ERROR_COMPILE => .Compile,
             .WREN_ERROR_RUNTIME => .Runtime,
-            .WREN_ERROR_STACK_TRACE => .Stacktrace,
+            .WREN_ERROR_STACK_TRACE => .StackTrace,
             else => std.debug.panic("unknown error type: {}", .{cerr_type}),
         };
         errorFn(vm, err_type, if (cmodule != null) cStrToSlice(cmodule) else null, if (cline >= 0) @intCast(u32, cline) else null, cStrToSlice(cmessage));
