@@ -6,13 +6,17 @@ const wren = @import("./wren.zig");
 const WrenError = @import("./error.zig").WrenError;
 const allocatorWrapper = @import("./allocator_wrapper.zig").allocatorWrapper;
 
+pub const ErrorType = enum { Compile, Runtime, Stacktrace };
+
 pub const WriteFn = fn (*Vm, []const u8) void;
+pub const ErrorFn = fn (*Vm, ErrorType, ?[]const u8, ?u32, []const u8) void;
 
 pub const Configuration = struct {
     const Self = @This();
 
     allocator: ?*Allocator = null,
     writeFn: ?WriteFn = null,
+    errorFn: ?ErrorFn = null,
     initialHeapSize: ?usize = null,
     minHeapSize: ?usize = null,
     heapGrowthPercent: ?u8 = null,
@@ -28,6 +32,10 @@ pub const Configuration = struct {
 
         if (self.writeFn) |f| {
             cfg.writeFn = writeWrapper;
+        }
+
+        if (self.errorFn) |f| {
+            cfg.errorFn = errorWrapper;
         }
 
         if (self.initialHeapSize) |i| {
@@ -52,13 +60,32 @@ pub const Configuration = struct {
         Vm.initInPlace(UserData, result, ptr, self, user_data);
     }
 
-    fn writeWrapper(vm: ?*wren.Vm, text: [*c]const u8) callconv(.C) void {
+    fn zigVmFromCVm(vm: ?*wren.Vm) *Vm {
         const udptr = wren.getUserData(vm);
         assert(udptr != null);
-        const zvm = @ptrCast(*Vm, @alignCast(@alignOf(*Vm), udptr));
-        const writeFn = zvm.writeFn orelse std.debug.panic("writeWrapper must only be installed when writeFn is set", .{});
-        const ztext = text[0..std.mem.lenZ(text)];
-        writeFn(zvm, ztext);
+        return @ptrCast(*Vm, @alignCast(@alignOf(*Vm), udptr));
+    }
+
+    fn cStrToSlice(str: [*c]const u8) []const u8 {
+        return str[0..std.mem.lenZ(str)];
+    }
+
+    fn writeWrapper(cvm: ?*wren.Vm, ctext: [*c]const u8) callconv(.C) void {
+        const vm = zigVmFromCVm(cvm);
+        const writeFn = vm.writeFn orelse std.debug.panic("writeWrapper must only be installed when writeFn is set", .{});
+        writeFn(vm, cStrToSlice(ctext));
+    }
+
+    fn errorWrapper(cvm: ?*wren.Vm, cerr_type: wren.ErrorType, cmodule: [*c]const u8, cline: c_int, cmessage: [*c]const u8) callconv(.C) void {
+        const vm = zigVmFromCVm(cvm);
+        const errorFn = vm.errorFn orelse std.debug.panic("errorWrapper must only be installed when errorFn is set", .{});
+        const err_type: ErrorType = switch (cerr_type) {
+            .WREN_ERROR_COMPILE => .Compile,
+            .WREN_ERROR_RUNTIME => .Runtime,
+            .WREN_ERROR_STACK_TRACE => .Stacktrace,
+            else => std.debug.panic("unknown error type: {}", .{cerr_type}),
+        };
+        errorFn(vm, err_type, if (cmodule != null) cStrToSlice(cmodule) else null, if (cline >= 0) @intCast(u32, cline) else null, cStrToSlice(cmessage));
     }
 };
 
@@ -68,6 +95,7 @@ pub const Vm = struct {
     vm: *wren.Vm,
     allocator: ?*Allocator,
     writeFn: ?WriteFn,
+    errorFn: ?ErrorFn,
     user_data_ptr: ?usize,
 
     // This will be much nicer when https://github.com/ziglang/zig/issues/2765 is done.
@@ -75,6 +103,7 @@ pub const Vm = struct {
         result.vm = vm;
         result.allocator = conf.allocator;
         result.writeFn = conf.writeFn;
+        result.errorFn = conf.errorFn;
         result.user_data_ptr = if (@sizeOf(UserData) > 0 and user_data != null) @ptrToInt(user_data) else null;
         result.registerWithWren();
     }
@@ -136,6 +165,23 @@ test "writeFn" {
     testing.expect(!testPrintSuccess);
     try vm.interpret("main", "System.print(\"I am running in a VM!\")");
     testing.expect(testPrintSuccess);
+}
+
+var testErrorCount: i32 = 0;
+fn testError(vm: *Vm, error_type: ErrorType, module: ?[]const u8, line: ?u32, message: []const u8) void {
+    testing.expect(error_type == .Compile);
+    testErrorCount += 1;
+}
+
+test "errorFn" {
+    var config = Configuration{};
+    config.errorFn = testError;
+
+    var vm: Vm = undefined;
+    try config.newVmInPlace(EmptyUserData, &vm, null);
+
+    vm.interpret("main", "zimport \"my_module\"") catch |e| {};
+    testing.expect(testErrorCount == 2);
 }
 
 test "allocators" {

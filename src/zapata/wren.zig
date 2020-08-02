@@ -5,6 +5,7 @@ const c = @cImport({
 // structs
 pub const Configuration = c.WrenConfiguration;
 pub const Vm = c.WrenVM;
+pub const ErrorType = c.WrenErrorType;
 
 // functions
 pub const freeVm = c.wrenFreeVM;
