@@ -167,10 +167,19 @@ test "writeFn" {
     testing.expect(testPrintSuccess);
 }
 
-var testErrorCount: i32 = 0;
+var testCompileErrorCount: i32 = 0;
+var testRuntimeErrorCount: i32 = 0;
+var testStackTraceErrorCount: i32 = 0;
 fn testError(vm: *Vm, error_type: ErrorType, module: ?[]const u8, line: ?u32, message: []const u8) void {
-    testing.expect(error_type == .Compile);
-    testErrorCount += 1;
+    if (error_type == .Compile) {
+        testCompileErrorCount += 1;
+    }
+    if (error_type == .Runtime) {
+        testRuntimeErrorCount += 1;
+    }
+    if (error_type == .StackTrace) {
+        testStackTraceErrorCount += 1;
+    }
 }
 
 test "errorFn" {
@@ -181,7 +190,11 @@ test "errorFn" {
     try config.newVmInPlace(EmptyUserData, &vm, null);
 
     vm.interpret("main", "zimport \"my_module\"") catch |e| {};
-    testing.expect(testErrorCount == 2);
+    testing.expectEqual(testCompileErrorCount, 2);
+
+    vm.interpret("main", "import \"blob\"") catch |e| {};
+    testing.expectEqual(@intCast(i32, 1), testRuntimeErrorCount);
+    testing.expectEqual(@intCast(i32, 1), testStackTraceErrorCount);
 }
 
 test "allocators" {
