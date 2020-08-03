@@ -166,6 +166,10 @@ pub const Vm = struct {
     }
 };
 
+fn printError(vm: *Vm, error_type: ErrorType, module: ?[]const u8, line: ?u32, message: []const u8) void {
+    std.debug.print("error_type={}, module={}, line={}, message={}\n", .{ error_type, module, line, message });
+}
+
 const testing = std.testing;
 
 const EmptyUserData = struct {};
@@ -208,6 +212,7 @@ fn testLoadModule(vm: *Vm, name: []const u8) AllocatedBytes {
     const source = "System.print(\"I am running in a VM!\")";
     var mem = AllocatedMemory(u8).init(std.heap.c_allocator, source.len + 1);
     std.mem.copy(u8, mem.data, source);
+    mem.data[source.len] = 0;
     return mem;
 }
 
