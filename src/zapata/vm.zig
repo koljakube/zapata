@@ -8,13 +8,33 @@ const allocatorWrapper = @import("./allocator_wrapper.zig").allocatorWrapper;
 
 pub const ErrorType = enum { Compile, Runtime, StackTrace };
 
+pub fn AllocatedMemory(comptime T: type) type {
+    return struct {
+        const Self = @This();
+
+        allocator: *Allocator,
+        data: []T,
+
+        pub fn init(allocator: *Allocator, len: usize) Self {
+            // In the future, not panicking might be nice. But failing
+            // allocations here put the VM in an irrecoverable state.
+            const data = allocator.alloc(T, len) catch |e| std.debug.panic("could not allocate memory but really need it", .{});
+            return Self{ .allocator = allocator, .data = data };
+        }
+    };
+}
+
+const AllocatedBytes = AllocatedMemory(u8);
+
 pub const WriteFn = fn (*Vm, []const u8) void;
 pub const ErrorFn = fn (*Vm, ErrorType, ?[]const u8, ?u32, []const u8) void;
+pub const LoadModuleFn = fn (*Vm, []const u8) AllocatedBytes;
 
 pub const Configuration = struct {
     const Self = @This();
 
     allocator: ?*Allocator = null,
+    loadModuleFn: ?LoadModuleFn = null,
     writeFn: ?WriteFn = null,
     errorFn: ?ErrorFn = null,
     initialHeapSize: ?usize = null,
@@ -28,6 +48,10 @@ pub const Configuration = struct {
 
         if (self.allocator) |a| {
             cfg.reallocateFn = allocatorWrapper;
+        }
+
+        if (self.loadModuleFn) |f| {
+            cfg.loadModuleFn = loadModuleWrapper;
         }
 
         if (self.writeFn) |f| {
@@ -87,6 +111,14 @@ pub const Configuration = struct {
         };
         errorFn(vm, err_type, if (cmodule != null) cStrToSlice(cmodule) else null, if (cline >= 0) @intCast(u32, cline) else null, cStrToSlice(cmessage));
     }
+
+    fn loadModuleWrapper(cvm: ?*wren.Vm, cname: [*c]const u8) callconv(.C) [*c]u8 {
+        const vm = zigVmFromCVm(cvm);
+        const loadModuleFn = vm.loadModuleFn orelse std.debug.panic("loadModuleWrapper must only be installed when loadModuleFn is set", .{});
+        const mem = loadModuleFn(vm, cStrToSlice(cname));
+        assert(mem.allocator == if (vm.allocator == null) std.heap.c_allocator else vm.allocator);
+        return mem.data.ptr;
+    }
 };
 
 pub const Vm = struct {
@@ -94,6 +126,7 @@ pub const Vm = struct {
 
     vm: *wren.Vm,
     allocator: ?*Allocator,
+    loadModuleFn: ?LoadModuleFn,
     writeFn: ?WriteFn,
     errorFn: ?ErrorFn,
     user_data_ptr: ?usize,
@@ -102,6 +135,7 @@ pub const Vm = struct {
     pub fn initInPlace(comptime UserData: type, result: *Self, vm: *wren.Vm, conf: Configuration, user_data: ?*UserData) void {
         result.vm = vm;
         result.allocator = conf.allocator;
+        result.loadModuleFn = conf.loadModuleFn;
         result.writeFn = conf.writeFn;
         result.errorFn = conf.errorFn;
         result.user_data_ptr = if (@sizeOf(UserData) > 0 and user_data != null) @ptrToInt(user_data) else null;
@@ -131,6 +165,10 @@ pub const Vm = struct {
         }
     }
 };
+
+fn printError(vm: *Vm, error_type: ErrorType, module: ?[]const u8, line: ?u32, message: []const u8) void {
+    std.debug.print("error_type={}, module={}, line={}, message={}\n", .{ error_type, module, line, message });
+}
 
 const testing = std.testing;
 
@@ -165,6 +203,28 @@ test "writeFn" {
     testing.expect(!testPrintSuccess);
     try vm.interpret("main", "System.print(\"I am running in a VM!\")");
     testing.expect(testPrintSuccess);
+}
+
+var testLoadModuleSuccess = false;
+fn testLoadModule(vm: *Vm, name: []const u8) AllocatedBytes {
+    testing.expect(std.mem.eql(u8, name, "my_module"));
+    testLoadModuleSuccess = true;
+    const source = "System.print(\"I am running in a VM!\")";
+    var mem = AllocatedMemory(u8).init(std.heap.c_allocator, source.len + 1);
+    std.mem.copy(u8, mem.data, source);
+    mem.data[source.len] = 0;
+    return mem;
+}
+
+test "loadModuleFn" {
+    var config = Configuration{};
+    config.loadModuleFn = testLoadModule;
+
+    var vm: Vm = undefined;
+    try config.newVmInPlace(EmptyUserData, &vm, null);
+    defer vm.deinit();
+    try vm.interpret("main", "import \"my_module\"");
+    testing.expect(testLoadModuleSuccess == true);
 }
 
 var testCompileErrorCount: i32 = 0;
