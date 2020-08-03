@@ -28,12 +28,14 @@ const AllocatedBytes = AllocatedMemory(u8);
 
 pub const WriteFn = fn (*Vm, []const u8) void;
 pub const ErrorFn = fn (*Vm, ErrorType, ?[]const u8, ?u32, []const u8) void;
+pub const ResolveModuleFn = fn (*Vm, []const u8, []const u8) AllocatedBytes;
 pub const LoadModuleFn = fn (*Vm, []const u8) AllocatedBytes;
 
 pub const Configuration = struct {
     const Self = @This();
 
     allocator: ?*Allocator = null,
+    resolveModuleFn: ?ResolveModuleFn = null,
     loadModuleFn: ?LoadModuleFn = null,
     writeFn: ?WriteFn = null,
     errorFn: ?ErrorFn = null,
@@ -48,6 +50,10 @@ pub const Configuration = struct {
 
         if (self.allocator) |a| {
             cfg.reallocateFn = allocatorWrapper;
+        }
+
+        if (self.resolveModuleFn) |f| {
+            cfg.resolveModuleFn = resolveModuleWrapper;
         }
 
         if (self.loadModuleFn) |f| {
@@ -112,6 +118,14 @@ pub const Configuration = struct {
         errorFn(vm, err_type, if (cmodule != null) cStrToSlice(cmodule) else null, if (cline >= 0) @intCast(u32, cline) else null, cStrToSlice(cmessage));
     }
 
+    fn resolveModuleWrapper(cvm: ?*wren.Vm, cimporter: [*c]const u8, cname: [*c]const u8) callconv(.C) [*c]u8 {
+        const vm = zigVmFromCVm(cvm);
+        const resolveModuleFn = vm.resolveModuleFn orelse std.debug.panic("resolveModuleWrapper must only be installed when resolveModuleFn is set", .{});
+        const mem = resolveModuleFn(vm, cStrToSlice(cimporter), cStrToSlice(cname));
+        assert(mem.allocator == if (vm.allocator == null) std.heap.c_allocator else vm.allocator);
+        return mem.data.ptr;
+    }
+
     fn loadModuleWrapper(cvm: ?*wren.Vm, cname: [*c]const u8) callconv(.C) [*c]u8 {
         const vm = zigVmFromCVm(cvm);
         const loadModuleFn = vm.loadModuleFn orelse std.debug.panic("loadModuleWrapper must only be installed when loadModuleFn is set", .{});
@@ -126,6 +140,7 @@ pub const Vm = struct {
 
     vm: *wren.Vm,
     allocator: ?*Allocator,
+    resolveModuleFn: ?ResolveModuleFn,
     loadModuleFn: ?LoadModuleFn,
     writeFn: ?WriteFn,
     errorFn: ?ErrorFn,
@@ -135,6 +150,7 @@ pub const Vm = struct {
     pub fn initInPlace(comptime UserData: type, result: *Self, vm: *wren.Vm, conf: Configuration, user_data: ?*UserData) void {
         result.vm = vm;
         result.allocator = conf.allocator;
+        result.resolveModuleFn = conf.resolveModuleFn;
         result.loadModuleFn = conf.loadModuleFn;
         result.writeFn = conf.writeFn;
         result.errorFn = conf.errorFn;
