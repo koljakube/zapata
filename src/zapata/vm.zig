@@ -221,6 +221,39 @@ test "writeFn" {
     testing.expect(testPrintSuccess);
 }
 
+var testResolveModuleSuccess = false;
+fn testResolveModule(vm: *Vm, importer: []const u8, name: []const u8) AllocatedBytes {
+    testing.expect(std.mem.eql(u8, "test_main", importer));
+    testing.expect(std.mem.eql(u8, "my_module", name));
+    const res = "it worked!";
+    var mem = AllocatedBytes.init(std.heap.c_allocator, res.len + 1);
+    std.mem.copy(u8, mem.data, res);
+    mem.data[res.len] = 0;
+    testResolveModuleSuccess = true;
+    return mem;
+}
+
+fn testResolveLoadModule(vm: *Vm, name: []const u8) AllocatedBytes {
+    testing.expect(std.mem.eql(u8, "it worked!", name));
+    const src = "";
+    var mem = AllocatedBytes.init(std.heap.c_allocator, src.len + 1);
+    std.mem.copy(u8, mem.data, src);
+    mem.data[src.len] = 0;
+    return mem;
+}
+
+test "resolveModuleFn" {
+    var config = Configuration{};
+    config.resolveModuleFn = testResolveModule;
+    config.loadModuleFn = testResolveLoadModule;
+
+    var vm: Vm = undefined;
+    try config.newVmInPlace(EmptyUserData, &vm, null);
+    defer vm.deinit();
+    try vm.interpret("test_main", "import \"my_module\"");
+    testing.expect(testResolveModuleSuccess == true);
+}
+
 var testLoadModuleSuccess = false;
 fn testLoadModule(vm: *Vm, name: []const u8) AllocatedBytes {
     testing.expect(std.mem.eql(u8, name, "my_module"));
