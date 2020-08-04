@@ -119,11 +119,11 @@ pub const Vm = struct {
         wren.freeVm(self.vm);
     }
 
-    fn registerWithWren(self: *Vm) void {
+    fn registerWithWren(self: *Self) void {
         wren.setUserData(self.vm, self);
     }
 
-    pub fn getUserData(self: Self, comptime UserData: type) *UserData {
+    pub fn getUserData(self: *Self, comptime UserData: type) *UserData {
         const udp = self.user_data_ptr orelse std.debug.panic("user data pointer is null", .{});
         return @intToPtr(*UserData, udp);
     }
@@ -136,6 +136,16 @@ pub const Vm = struct {
         if (res == .WREN_RESULT_RUNTIME_ERROR) {
             return WrenError.RuntimeError;
         }
+    }
+
+    pub fn getSlotCount(self: *Self) u32 {
+        const slot_count = wren.getSlotCount(self.vm);
+        assert(slot_count >= 0);
+        return @intCast(u32, slot_count);
+    }
+
+    pub fn ensureSlots(self: *Self, slot_count: u32) void {
+        wren.ensureSlots(self.vm, @intCast(c_int, slot_count));
     }
 };
 
@@ -273,4 +283,14 @@ test "allocators" {
     try config.newVmInPlace(EmptyUserData, &vm, null);
     defer vm.deinit();
     try vm.interpret("main", "System.print(\"I am running in a VM!\")");
+}
+
+test "slot count" {
+    var config = Configuration{};
+    var vm: Vm = undefined;
+    try config.newVmInPlace(EmptyUserData, &vm, null);
+    defer vm.deinit();
+
+    vm.ensureSlots(10);
+    testing.expect(vm.getSlotCount() >= 10);
 }
