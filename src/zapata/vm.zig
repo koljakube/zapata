@@ -3,10 +3,22 @@ const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
 
 const wren = @import("./wren.zig");
+const wrappers = @import("./c_wrappers.zig");
 const WrenError = @import("./error.zig").WrenError;
 const allocatorWrapper = @import("./allocator_wrapper.zig").allocatorWrapper;
 
 pub const ErrorType = enum { Compile, Runtime, StackTrace };
+
+pub const SlotType = enum {
+    Bool,
+    Foreign,
+    List,
+    Map,
+    Null,
+    Number,
+    String,
+    Unknown,
+};
 
 pub fn AllocatedMemory(comptime T: type) type {
     return struct {
@@ -53,19 +65,19 @@ pub const Configuration = struct {
         }
 
         if (self.resolveModuleFn) |f| {
-            cfg.resolveModuleFn = resolveModuleWrapper;
+            cfg.resolveModuleFn = wrappers.resolveModuleWrapper;
         }
 
         if (self.loadModuleFn) |f| {
-            cfg.loadModuleFn = loadModuleWrapper;
+            cfg.loadModuleFn = wrappers.loadModuleWrapper;
         }
 
         if (self.writeFn) |f| {
-            cfg.writeFn = writeWrapper;
+            cfg.writeFn = wrappers.writeWrapper;
         }
 
         if (self.errorFn) |f| {
-            cfg.errorFn = errorWrapper;
+            cfg.errorFn = wrappers.errorWrapper;
         }
 
         if (self.initialHeapSize) |i| {
@@ -88,50 +100,6 @@ pub const Configuration = struct {
 
         const ptr = wren.newVm(&cfg) orelse return WrenError.VmCreationFailed;
         Vm.initInPlace(UserData, result, ptr, self, user_data);
-    }
-
-    fn zigVmFromCVm(vm: ?*wren.Vm) *Vm {
-        const udptr = wren.getUserData(vm);
-        assert(udptr != null);
-        return @ptrCast(*Vm, @alignCast(@alignOf(*Vm), udptr));
-    }
-
-    fn cStrToSlice(str: [*c]const u8) []const u8 {
-        return str[0..std.mem.lenZ(str)];
-    }
-
-    fn writeWrapper(cvm: ?*wren.Vm, ctext: [*c]const u8) callconv(.C) void {
-        const vm = zigVmFromCVm(cvm);
-        const writeFn = vm.writeFn orelse std.debug.panic("writeWrapper must only be installed when writeFn is set", .{});
-        writeFn(vm, cStrToSlice(ctext));
-    }
-
-    fn errorWrapper(cvm: ?*wren.Vm, cerr_type: wren.ErrorType, cmodule: [*c]const u8, cline: c_int, cmessage: [*c]const u8) callconv(.C) void {
-        const vm = zigVmFromCVm(cvm);
-        const errorFn = vm.errorFn orelse std.debug.panic("errorWrapper must only be installed when errorFn is set", .{});
-        const err_type: ErrorType = switch (cerr_type) {
-            .WREN_ERROR_COMPILE => .Compile,
-            .WREN_ERROR_RUNTIME => .Runtime,
-            .WREN_ERROR_STACK_TRACE => .StackTrace,
-            else => std.debug.panic("unknown error type: {}", .{cerr_type}),
-        };
-        errorFn(vm, err_type, if (cmodule != null) cStrToSlice(cmodule) else null, if (cline >= 0) @intCast(u32, cline) else null, cStrToSlice(cmessage));
-    }
-
-    fn resolveModuleWrapper(cvm: ?*wren.Vm, cimporter: [*c]const u8, cname: [*c]const u8) callconv(.C) [*c]u8 {
-        const vm = zigVmFromCVm(cvm);
-        const resolveModuleFn = vm.resolveModuleFn orelse std.debug.panic("resolveModuleWrapper must only be installed when resolveModuleFn is set", .{});
-        const mem = resolveModuleFn(vm, cStrToSlice(cimporter), cStrToSlice(cname));
-        assert(mem.allocator == if (vm.allocator == null) std.heap.c_allocator else vm.allocator);
-        return mem.data.ptr;
-    }
-
-    fn loadModuleWrapper(cvm: ?*wren.Vm, cname: [*c]const u8) callconv(.C) [*c]u8 {
-        const vm = zigVmFromCVm(cvm);
-        const loadModuleFn = vm.loadModuleFn orelse std.debug.panic("loadModuleWrapper must only be installed when loadModuleFn is set", .{});
-        const mem = loadModuleFn(vm, cStrToSlice(cname));
-        assert(mem.allocator == if (vm.allocator == null) std.heap.c_allocator else vm.allocator);
-        return mem.data.ptr;
     }
 };
 
@@ -162,11 +130,11 @@ pub const Vm = struct {
         wren.freeVm(self.vm);
     }
 
-    fn registerWithWren(self: *Vm) void {
+    fn registerWithWren(self: *Self) void {
         wren.setUserData(self.vm, self);
     }
 
-    pub fn getUserData(self: Self, comptime UserData: type) *UserData {
+    pub fn getUserData(self: *Self, comptime UserData: type) *UserData {
         const udp = self.user_data_ptr orelse std.debug.panic("user data pointer is null", .{});
         return @intToPtr(*UserData, udp);
     }
@@ -179,6 +147,82 @@ pub const Vm = struct {
         if (res == .WREN_RESULT_RUNTIME_ERROR) {
             return WrenError.RuntimeError;
         }
+    }
+
+    pub fn getSlotCount(self: *Self) u32 {
+        const slot_count = wren.getSlotCount(self.vm);
+        assert(slot_count >= 0);
+        return @intCast(u32, slot_count);
+    }
+
+    pub fn ensureSlots(self: *Self, slot_count: u32) void {
+        wren.ensureSlots(self.vm, @intCast(c_int, slot_count));
+    }
+
+    pub fn getSlotType(self: *Self, slot_index: u32) SlotType {
+        return switch (wren.getSlotType(self.vm, @intCast(c_int, slot_index))) {
+            .WREN_TYPE_BOOL => .Bool,
+            .WREN_TYPE_FOREIGN => .Foreign,
+            .WREN_TYPE_LIST => .Map,
+            .WREN_TYPE_MAP => .Map,
+            .WREN_TYPE_NULL => .Null,
+            .WREN_TYPE_NUM => .Number,
+            .WREN_TYPE_STRING => .String,
+            .WREN_TYPE_UNKNOWN => .Unknown,
+            else => std.debug.panic("invalid slot type returned: {}", .{wren.getSlotType(self.vm, @intCast(c_int, slot_index))}),
+        };
+    }
+
+    pub fn setSlot(self: *Self, slot_index: u32, value: anytype) void {
+        comptime const ti = @typeInfo(@TypeOf(value));
+        // @compileLog("type: " ++ @typeName(@TypeOf(value)));
+        switch (ti) {
+            .Bool => wren.setSlotBool(self.vm, @intCast(c_int, slot_index), value),
+            .Int => wren.setSlotDouble(self.vm, @intCast(c_int, slot_index), @intToFloat(f64, value)),
+            .Float => wren.setSlotDouble(self.vm, @intCast(c_int, slot_index), value),
+            .ComptimeInt => wren.setSlotDouble(self.vm, @intCast(c_int, slot_index), value),
+            .ComptimeFloat => wren.setSlotDouble(self.vm, @intCast(c_int, slot_index), value),
+            .Array => if (ti.Array.child == u8) wren.setSlotBytes(@intCast(c_int, slot_index), value.ptr, value.len) else @compileError("only u8 arrays are allowed"),
+            .Pointer => {
+                comptime const cti = @typeInfo(ti.Pointer.child);
+                if (cti == .Array and cti.Array.child == u8) {
+                    wren.setSlotBytes(self.vm, @intCast(c_int, slot_index), @ptrCast([*c]const u8, value), value.*.len);
+                } else {
+                    @compileError("only pointers to u8 arrays are allowed");
+                }
+            },
+            .Null => wren.setSlotNull(self.vm, @intCast(c_int, slot_index)),
+            else => @compileError("not a valid wren datatype"),
+        }
+    }
+
+    pub fn getSlotBool(self: *Self, slot_index: u32) bool {
+        assert(self.getSlotType(slot_index) == .Bool);
+        return wren.getSlotBool(self.vm, @intCast(c_int, slot_index));
+    }
+
+    pub fn getSlotNumber(self: *Self, comptime T: type, slot_index: u32) T {
+        assert(self.getSlotType(slot_index) == .Number);
+        assert(T == i32 or T == u32 or T == f32 or T == f64);
+        comptime const ti = @typeInfo(T);
+        return switch (ti) {
+            .Int => @floatToInt(T, wren.getSlotDouble(self.vm, @intCast(c_int, slot_index))),
+            .Float => @floatCast(T, wren.getSlotDouble(self.vm, @intCast(c_int, slot_index))),
+            else => @compileError("numbers can only be converted to numerical types"),
+        };
+    }
+
+    pub fn getSlotString(self: *Self, slot_index: u32) []const u8 {
+        assert(self.getSlotType(slot_index) == .String);
+        var slice: []const u8 = undefined;
+        var len: c_int = undefined;
+        slice.ptr = wren.getSlotBytes(self.vm, @intCast(c_int, slot_index), @ptrCast([*c]c_int, &len));
+        slice.len = @intCast(usize, len);
+        return slice;
+    }
+
+    pub fn isSlotNull(self: *Self, slot_index: u32) bool {
+        return self.getSlotType(slot_index) == .Null;
     }
 };
 
@@ -223,8 +267,8 @@ test "writeFn" {
 
 var testResolveModuleSuccess = false;
 fn testResolveModule(vm: *Vm, importer: []const u8, name: []const u8) AllocatedBytes {
-    testing.expect(std.mem.eql(u8, "test_main", importer));
-    testing.expect(std.mem.eql(u8, "my_module", name));
+    testing.expectEqualStrings("test_main", importer);
+    testing.expectEqualStrings("my_module", name);
     const res = "it worked!";
     var mem = AllocatedBytes.init(std.heap.c_allocator, res.len + 1);
     std.mem.copy(u8, mem.data, res);
@@ -234,7 +278,7 @@ fn testResolveModule(vm: *Vm, importer: []const u8, name: []const u8) AllocatedB
 }
 
 fn testResolveLoadModule(vm: *Vm, name: []const u8) AllocatedBytes {
-    testing.expect(std.mem.eql(u8, "it worked!", name));
+    testing.expectEqualStrings("it worked!", name);
     const src = "";
     var mem = AllocatedBytes.init(std.heap.c_allocator, src.len + 1);
     std.mem.copy(u8, mem.data, src);
@@ -256,7 +300,7 @@ test "resolveModuleFn" {
 
 var testLoadModuleSuccess = false;
 fn testLoadModule(vm: *Vm, name: []const u8) AllocatedBytes {
-    testing.expect(std.mem.eql(u8, name, "my_module"));
+    testing.expectEqualStrings(name, "my_module");
     testLoadModuleSuccess = true;
     const source = "System.print(\"I am running in a VM!\")";
     var mem = AllocatedMemory(u8).init(std.heap.c_allocator, source.len + 1);
@@ -316,4 +360,61 @@ test "allocators" {
     try config.newVmInPlace(EmptyUserData, &vm, null);
     defer vm.deinit();
     try vm.interpret("main", "System.print(\"I am running in a VM!\")");
+}
+
+test "slot count" {
+    var config = Configuration{};
+    var vm: Vm = undefined;
+    try config.newVmInPlace(EmptyUserData, &vm, null);
+    defer vm.deinit();
+
+    vm.ensureSlots(10);
+    testing.expect(vm.getSlotCount() >= 10);
+}
+
+test "primitive slot types" {
+    var config = Configuration{};
+    var vm: Vm = undefined;
+    try config.newVmInPlace(EmptyUserData, &vm, null);
+    defer vm.deinit();
+
+    vm.ensureSlots(100);
+    var i: u32 = 0;
+
+    vm.setSlot(i, true);
+    testing.expectEqual(SlotType.Bool, vm.getSlotType(i));
+    testing.expectEqual(true, vm.getSlotBool(i));
+    i += 1;
+
+    var runtimeInt: i32 = 42;
+    vm.setSlot(i, runtimeInt);
+    testing.expectEqual(SlotType.Number, vm.getSlotType(i));
+    testing.expectEqual(runtimeInt, vm.getSlotNumber(i32, i));
+    i += 1;
+
+    var runtimeFloat: f32 = 23.5;
+    vm.setSlot(i, runtimeFloat);
+    testing.expectEqual(SlotType.Number, vm.getSlotType(i));
+    testing.expectEqual(runtimeFloat, vm.getSlotNumber(f32, i));
+    i += 1;
+
+    vm.setSlot(i, 42);
+    testing.expectEqual(SlotType.Number, vm.getSlotType(i));
+    testing.expectEqual(@as(i32, 42), vm.getSlotNumber(i32, i));
+    i += 1;
+
+    vm.setSlot(i, 23.5);
+    testing.expectEqual(SlotType.Number, vm.getSlotType(i));
+    testing.expectEqual(@as(f32, 23.5), vm.getSlotNumber(f32, i));
+    i += 1;
+
+    vm.setSlot(i, "All your base");
+    testing.expectEqual(SlotType.String, vm.getSlotType(i));
+    testing.expectEqualStrings("All your base", vm.getSlotString(i));
+    i += 1;
+
+    vm.setSlot(i, null);
+    testing.expectEqual(SlotType.Null, vm.getSlotType(i));
+    testing.expect(vm.isSlotNull(i));
+    i += 1;
 }
