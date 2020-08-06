@@ -224,6 +224,10 @@ pub const Vm = struct {
     pub fn isSlotNull(self: *Self, slot_index: u32) bool {
         return self.getSlotType(slot_index) == .Null;
     }
+
+    pub fn getVariable(self: *Self, module: []const u8, variable: []const u8, slot_index: u32) void {
+        wren.getVariable(self.vm, @ptrCast([*c]const u8, module), @ptrCast([*c]const u8, variable), @intCast(c_int, slot_index));
+    }
 };
 
 fn printError(vm: *Vm, error_type: ErrorType, module: ?[]const u8, line: ?u32, message: []const u8) void {
@@ -417,4 +421,17 @@ test "primitive slot types" {
     testing.expectEqual(SlotType.Null, vm.getSlotType(i));
     testing.expect(vm.isSlotNull(i));
     i += 1;
+}
+
+test "read variable" {
+    var config = Configuration{};
+    var vm: Vm = undefined;
+    try config.newVmInPlace(EmptyUserData, &vm, null);
+    defer vm.deinit();
+
+    try vm.interpret("test", "var my_var = \"Move all zig!\"");
+    vm.ensureSlots(1);
+    vm.getVariable("test", "my_var", 0);
+    testing.expectEqual(SlotType.String, vm.getSlotType(0));
+    testing.expectEqualStrings("Move all zig!", vm.getSlotString(0));
 }
