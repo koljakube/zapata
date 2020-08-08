@@ -5,6 +5,7 @@ const Allocator = std.mem.Allocator;
 const wren = @import("./wren.zig");
 const wrappers = @import("./c_wrappers.zig");
 const WrenError = @import("./error.zig").WrenError;
+const Handle = @import("./handle.zig").Handle;
 const allocatorWrapper = @import("./allocator_wrapper.zig").allocatorWrapper;
 
 pub const ErrorType = enum { Compile, Runtime, StackTrace };
@@ -227,6 +228,16 @@ pub const Vm = struct {
 
     pub fn getVariable(self: *Self, module: []const u8, variable: []const u8, slot_index: u32) void {
         wren.getVariable(self.vm, @ptrCast([*c]const u8, module), @ptrCast([*c]const u8, variable), @intCast(c_int, slot_index));
+    }
+
+    pub fn createHandle(self: *Self, comptime T: type, slot_index: u32) Handle(T) {
+        const ptr = wren.getSlotHandle(self.vm, @intCast(c_int, slot_index));
+        assert(ptr != null);
+        return Handle(T).init(self, @ptrCast(*wren.Handle, ptr));
+    }
+
+    pub fn setSlotHandle(self: *Self, comptime T: type, slot_index: u32, handle: *Handle(T)) void {
+        wren.setSlotHandle(self.vm, @intCast(c_int, slot_index), handle.handle);
     }
 };
 

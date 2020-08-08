@@ -4,6 +4,7 @@ const c = @cImport({
 
 // structs
 pub const Configuration = c.WrenConfiguration;
+pub const Handle = c.WrenHandle;
 pub const Vm = c.WrenVM;
 pub const ErrorType = c.WrenErrorType;
 
@@ -14,6 +15,7 @@ pub const getSlotBool = c.wrenGetSlotBool;
 pub const getSlotBytes = c.wrenGetSlotBytes;
 pub const getSlotCount = c.wrenGetSlotCount;
 pub const getSlotDouble = c.wrenGetSlotDouble;
+pub const getSlotHandle = c.wrenGetSlotHandle;
 pub const getSlotString = c.wrenGetSlotString;
 pub const getSlotType = c.wrenGetSlotType;
 pub const getUserData = c.wrenGetUserData;
@@ -25,6 +27,7 @@ pub const newVm = c.wrenNewVM;
 pub const setSlotBool = c.wrenSetSlotBool;
 pub const setSlotBytes = c.wrenSetSlotBytes;
 pub const setSlotDouble = c.wrenSetSlotDouble;
+pub const setSlotHandle = c.wrenSetSlotHandle;
 pub const setSlotNewList = wrenSetSlotNewList;
 pub const setSlotNull = c.wrenSetSlotNull;
 pub const setSlotString = c.wrenSetSlotString;
