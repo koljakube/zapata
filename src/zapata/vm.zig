@@ -95,7 +95,7 @@ pub const Configuration = struct {
         // allocator.  Create a temporary pseudo-userdata with only the
         // allocator set, it will be replaced after being used once.
         var pseudo_vm: Vm = undefined;
-        std.mem.set(u8, std.mem.asBytes(&Vm), 0);
+        std.mem.set(u8, std.mem.asBytes(&pseudo_vm), 0);
         pseudo_vm.allocator = self.allocator;
         cfg.userData = &pseudo_vm;
 
@@ -176,7 +176,6 @@ pub const Vm = struct {
 
     pub fn setSlot(self: *Self, slot_index: u32, value: anytype) void {
         comptime const ti = @typeInfo(@TypeOf(value));
-        // @compileLog("type: " ++ @typeName(@TypeOf(value)));
         switch (ti) {
             .Bool => wren.setSlotBool(self.vm, @intCast(c_int, slot_index), value),
             .Int => wren.setSlotDouble(self.vm, @intCast(c_int, slot_index), @intToFloat(f64, value)),
@@ -193,7 +192,7 @@ pub const Vm = struct {
                 }
             },
             .Null => wren.setSlotNull(self.vm, @intCast(c_int, slot_index)),
-            else => @compileError("not a valid wren datatype"),
+            else => @compileError("not a valid wren datatype: " ++ @typeName(@TypeOf(value))),
         }
     }
 
@@ -230,14 +229,8 @@ pub const Vm = struct {
         wren.getVariable(self.vm, @ptrCast([*c]const u8, module), @ptrCast([*c]const u8, variable), @intCast(c_int, slot_index));
     }
 
-    pub fn createHandle(self: *Self, comptime T: type, slot_index: u32) Handle(T) {
-        const ptr = wren.getSlotHandle(self.vm, @intCast(c_int, slot_index));
-        assert(ptr != null);
-        return Handle(T).init(self, @ptrCast(*wren.Handle, ptr));
-    }
-
-    pub fn setSlotHandle(self: *Self, comptime T: type, slot_index: u32, handle: *Handle(T)) void {
-        wren.setSlotHandle(self.vm, @intCast(c_int, slot_index), handle.handle);
+    pub fn setSlotHandle(self: *Self, slot_index: u32, handle: *wren.Handle) void {
+        wren.setSlotHandle(self.vm, @intCast(c_int, slot_index), handle);
     }
 };
 

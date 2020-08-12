@@ -9,6 +9,7 @@ pub const Vm = c.WrenVM;
 pub const ErrorType = c.WrenErrorType;
 
 // functions
+pub const call = c.wrenCall;
 pub const ensureSlots = c.wrenEnsureSlots;
 pub const freeVm = c.wrenFreeVM;
 pub const getSlotBool = c.wrenGetSlotBool;
@@ -23,7 +24,9 @@ pub const getVariable = c.wrenGetVariable;
 pub const initConfiguration = c.wrenInitConfiguration;
 pub const insertInList = c.wrenInsertInList;
 pub const interpret = c.wrenInterpret;
+pub const makeCallHandle = c.wrenMakeCallHandle;
 pub const newVm = c.wrenNewVM;
+pub const releaseHandle = c.wrenReleaseHandle;
 pub const setSlotBool = c.wrenSetSlotBool;
 pub const setSlotBytes = c.wrenSetSlotBytes;
 pub const setSlotDouble = c.wrenSetSlotDouble;
