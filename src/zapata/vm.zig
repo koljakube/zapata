@@ -196,29 +196,35 @@ pub const Vm = struct {
         }
     }
 
-    pub fn getSlotBool(self: *Self, slot_index: u32) bool {
-        assert(self.getSlotType(slot_index) == .Bool);
-        return wren.getSlotBool(self.vm, @intCast(c_int, slot_index));
-    }
-
-    pub fn getSlotNumber(self: *Self, comptime T: type, slot_index: u32) T {
-        assert(self.getSlotType(slot_index) == .Number);
-        assert(T == i32 or T == u32 or T == f32 or T == f64);
+    pub fn getSlot(self: *Self, comptime T: type, slot_index: u32) T {
+        const slot = @intCast(c_int, slot_index);
         comptime const ti = @typeInfo(T);
         return switch (ti) {
-            .Int => @floatToInt(T, wren.getSlotDouble(self.vm, @intCast(c_int, slot_index))),
-            .Float => @floatCast(T, wren.getSlotDouble(self.vm, @intCast(c_int, slot_index))),
-            else => @compileError("numbers can only be converted to numerical types"),
+            .Int, .Float => {
+                assert(self.getSlotType(slot_index) == .Number);
+                switch (T) {
+                    i32, u32 => return @floatToInt(T, wren.getSlotDouble(self.vm, slot)),
+                    f32, f64 => return @floatCast(T, wren.getSlotDouble(self.vm, slot)),
+                    else => @compileError("only i32, u32, f32 or f64 are allowed, got " ++ @typeName(T)),
+                }
+            },
+            .Bool => {
+                assert(self.getSlotType(slot_index) == .Bool);
+                return wren.getSlotBool(self.vm, slot);
+            },
+            .Pointer => {
+                assert(self.getSlotType(slot_index) == .String);
+                if (ti.Pointer.child != u8 or !ti.Pointer.is_const) {
+                    @compileError("strings can only be retrieved as []u8 const");
+                }
+                var slice: []const u8 = undefined;
+                var len: c_int = undefined;
+                slice.ptr = wren.getSlotBytes(self.vm, @intCast(c_int, slot_index), @ptrCast([*c]c_int, &len));
+                slice.len = @intCast(usize, len);
+                return slice;
+            },
+            else => @compileError("not a valid wren datatype: " ++ @typeName(@TypeOf(value))),
         };
-    }
-
-    pub fn getSlotString(self: *Self, slot_index: u32) []const u8 {
-        assert(self.getSlotType(slot_index) == .String);
-        var slice: []const u8 = undefined;
-        var len: c_int = undefined;
-        slice.ptr = wren.getSlotBytes(self.vm, @intCast(c_int, slot_index), @ptrCast([*c]c_int, &len));
-        slice.len = @intCast(usize, len);
-        return slice;
     }
 
     pub fn isSlotNull(self: *Self, slot_index: u32) bool {
@@ -391,34 +397,34 @@ test "primitive slot types" {
 
     vm.setSlot(i, true);
     testing.expectEqual(SlotType.Bool, vm.getSlotType(i));
-    testing.expectEqual(true, vm.getSlotBool(i));
+    testing.expectEqual(true, vm.getSlot(bool, i));
     i += 1;
 
     var runtimeInt: i32 = 42;
     vm.setSlot(i, runtimeInt);
     testing.expectEqual(SlotType.Number, vm.getSlotType(i));
-    testing.expectEqual(runtimeInt, vm.getSlotNumber(i32, i));
+    testing.expectEqual(runtimeInt, vm.getSlot(i32, i));
     i += 1;
 
     var runtimeFloat: f32 = 23.5;
     vm.setSlot(i, runtimeFloat);
     testing.expectEqual(SlotType.Number, vm.getSlotType(i));
-    testing.expectEqual(runtimeFloat, vm.getSlotNumber(f32, i));
+    testing.expectEqual(runtimeFloat, vm.getSlot(f32, i));
     i += 1;
 
     vm.setSlot(i, 42);
     testing.expectEqual(SlotType.Number, vm.getSlotType(i));
-    testing.expectEqual(@as(i32, 42), vm.getSlotNumber(i32, i));
+    testing.expectEqual(@as(i32, 42), vm.getSlot(i32, i));
     i += 1;
 
     vm.setSlot(i, 23.5);
     testing.expectEqual(SlotType.Number, vm.getSlotType(i));
-    testing.expectEqual(@as(f32, 23.5), vm.getSlotNumber(f32, i));
+    testing.expectEqual(@as(f32, 23.5), vm.getSlot(f32, i));
     i += 1;
 
     vm.setSlot(i, "All your base");
     testing.expectEqual(SlotType.String, vm.getSlotType(i));
-    testing.expectEqualStrings("All your base", vm.getSlotString(i));
+    testing.expectEqualStrings("All your base", vm.getSlot([]const u8, i));
     i += 1;
 
     vm.setSlot(i, null);
@@ -437,5 +443,5 @@ test "read variable" {
     vm.ensureSlots(1);
     vm.getVariable("test", "my_var", 0);
     testing.expectEqual(SlotType.String, vm.getSlotType(0));
-    testing.expectEqualStrings("Move all zig!", vm.getSlotString(0));
+    testing.expectEqualStrings("Move all zig!", vm.getSlot([]const u8, 0));
 }

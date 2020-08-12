@@ -87,10 +87,7 @@ pub fn FunctionHandle(comptime module: []const u8, comptime function: []const u8
                 return WrenError.RuntimeError;
             }
 
-            return switch (@typeInfo(Ret)) {
-                .Int => return self.vm.getSlotNumber(Ret, 0),
-                else => @compileError("unsupported return type " ++ @typeName(Ret)),
-            };
+            return self.vm.getSlot(Ret, 0);
         }
     };
 }
