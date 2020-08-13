@@ -6,6 +6,7 @@ const wren = @import("./wren.zig");
 const wrappers = @import("./c_wrappers.zig");
 const WrenError = @import("./error.zig").WrenError;
 const Handle = @import("./handle.zig").Handle;
+const Receiver = @import("./call.zig").Receiver;
 const allocatorWrapper = @import("./allocator_wrapper.zig").allocatorWrapper;
 
 pub const ErrorType = enum { Compile, Runtime, StackTrace };
@@ -213,7 +214,14 @@ pub const Vm = struct {
                 return wren.getSlotBool(self.vm, slot);
             },
             .Pointer => {
-                assert(self.getSlotType(slot_index) == .String);
+                const slot_type = self.getSlotType(slot_index);
+                if (ti.Pointer.child == wren.Handle) {
+                    assert(slot_type == .Unknown);
+                    const handle = wren.getSlotHandle(self.vm, slot);
+                    assert(handle != null);
+                    return @ptrCast(T, handle);
+                }
+                assert(slot_type == .String);
                 if (ti.Pointer.child != u8 or !ti.Pointer.is_const) {
                     @compileError("strings can only be retrieved as []u8 const");
                 }
@@ -223,7 +231,7 @@ pub const Vm = struct {
                 slice.len = @intCast(usize, len);
                 return slice;
             },
-            else => @compileError("not a valid wren datatype: " ++ @typeName(@TypeOf(value))),
+            else => @compileError("not a valid wren datatype: " ++ @typeName(T)),
         };
     }
 
@@ -238,6 +246,9 @@ pub const Vm = struct {
     pub fn setSlotHandle(self: *Self, slot_index: u32, handle: *wren.Handle) void {
         wren.setSlotHandle(self.vm, @intCast(c_int, slot_index), handle);
     }
+
+    pub const makeReceiver = @import("./call.zig").Receiver.init;
+    pub const makeCallHandle = @import("./call.zig").CallHandle.init;
 };
 
 fn printError(vm: *Vm, error_type: ErrorType, module: ?[]const u8, line: ?u32, message: []const u8) void {

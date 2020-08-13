@@ -46,7 +46,6 @@ pub fn FunctionHandle(comptime module: []const u8, comptime function: []const u8
             buffer[index - 1] = ')';
             buffer[index] = 0;
 
-            vm.getVariable(module, "Fn", slot_index);
             const callHandle = wren.makeCallHandle(vm.vm, @ptrCast([*c]const u8, &buffer[0]));
             assert(callHandle != null);
 
@@ -108,9 +107,9 @@ test "function handle" {
     try config.newVmInPlace(EmptyUserData, &vm, null);
 
     try vm.interpret("test",
-        \\ var addTwo = Fn.new { |n|
-        \\   return n + 2
-        \\ }
+        \\var addTwo = Fn.new { |n|
+        \\  return n + 2
+        \\}
     );
 
     const signature = FunctionHandle("test", "addTwo", i32, .{i32});
@@ -118,4 +117,44 @@ test "function handle" {
     defer funcHandle.deinit();
     const res = try funcHandle.call(.{5});
     testing.expectEqual(@as(i32, 7), res);
+}
+
+test "many parameters" {
+    var config = Configuration{};
+    config.errorFn = printError;
+    config.writeFn = print;
+    var vm: Vm = undefined;
+    try config.newVmInPlace(EmptyUserData, &vm, null);
+
+    try vm.interpret("test",
+        \\var sum3 = Fn.new { |a, b, c|
+        \\  return a + b + c
+        \\}
+    );
+
+    const signature = FunctionHandle("test", "sum3", f64, .{ i32, u32, f32 });
+    const funcHandle = signature.init(&vm);
+    defer funcHandle.deinit();
+    const res = try funcHandle.call(.{ -3, 3, 23.5 });
+    testing.expectEqual(@as(f64, 23.5), res);
+}
+
+test "string parameters" {
+    var config = Configuration{};
+    config.errorFn = printError;
+    config.writeFn = print;
+    var vm: Vm = undefined;
+    try config.newVmInPlace(EmptyUserData, &vm, null);
+
+    try vm.interpret("test",
+        \\var concat = Fn.new { |s1, s2|
+        \\  return s1 + s2
+        \\}
+    );
+
+    const signature = FunctionHandle("test", "concat", []const u8, .{ []const u8, []const u8 });
+    const funcHandle = signature.init(&vm);
+    defer funcHandle.deinit();
+    const res = try funcHandle.call(.{ "kum", "quat" });
+    testing.expectEqualStrings("kumquat", res);
 }
