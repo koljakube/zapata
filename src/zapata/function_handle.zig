@@ -7,25 +7,26 @@ const Configuration = @import("./vm.zig").Configuration;
 const ErrorType = @import("./vm.zig").ErrorType;
 const WrenError = @import("./error.zig").WrenError;
 
+const call = @import("./call.zig");
+const Receiver = call.Receiver;
+const CallHandle = call.CallHandle;
+const Method = call.Method;
+
 const EmptyUserData = struct {};
 
 const testing = std.testing;
 
 /// Handle for freestanding functions (function objects saved in variables).
 pub fn FunctionHandle(comptime module: []const u8, comptime function: []const u8, comptime Ret: anytype, comptime Args: anytype) type {
-    if (@typeInfo(@TypeOf(Args)) != .Struct) {
-        @compileError("call arguments must be passed as a tuple");
-    }
     return struct {
         const Self = @This();
 
-        vm: *Vm,
-        functionHandle: *wren.Handle,
-        callHandle: *wren.Handle,
+        const Function = Method(Ret, Args);
+
+        method: Function,
 
         pub fn init(vm: *Vm) Self {
             const slot_index = 0;
-            vm.ensureSlots(1);
 
             const fun = "call";
             // Tradeoff: maximum signature length or dynamic allocation. I chose the former.
@@ -46,47 +47,19 @@ pub fn FunctionHandle(comptime module: []const u8, comptime function: []const u8
             buffer[index - 1] = ')';
             buffer[index] = 0;
 
-            const callHandle = wren.makeCallHandle(vm.vm, @ptrCast([*c]const u8, &buffer[0]));
-            assert(callHandle != null);
-
-            vm.getVariable(module, function, slot_index);
-            const functionHandle = wren.getSlotHandle(vm.vm, @intCast(c_int, slot_index));
-            assert(functionHandle != null);
-
-            return Self{
-                .vm = vm,
-                .functionHandle = @ptrCast(*wren.Handle, functionHandle),
-                .callHandle = @ptrCast(*wren.Handle, callHandle),
-            };
+            const receiver = Receiver.init(vm, module, function);
+            const call_handle = CallHandle.init(vm, buffer[0..]);
+            const method = Function.init(receiver, call_handle);
+            return Self{ .method = method };
         }
 
         pub fn deinit(self: Self) void {
-            wren.releaseHandle(self.vm.vm, self.functionHandle);
-            wren.releaseHandle(self.vm.vm, self.callHandle);
+            self.method.call_handle.deinit();
+            self.method.receiver.deinit();
         }
 
-        /// Method call receiver always goes into slot zero!
         pub fn call(self: Self, args: anytype) !Ret {
-            assert(args.len == Args.len);
-            self.vm.ensureSlots(Args.len + 1);
-
-            self.vm.setSlotHandle(0, self.functionHandle);
-
-            comptime var slot_index: u32 = 1;
-            inline for (Args) |Arg| {
-                self.vm.setSlot(slot_index, args[slot_index - 1]);
-                slot_index += 1;
-            }
-
-            const res = wren.call(self.vm.vm, self.callHandle);
-            if (res == .WREN_RESULT_COMPILE_ERROR) {
-                return WrenError.CompileError;
-            }
-            if (res == .WREN_RESULT_RUNTIME_ERROR) {
-                return WrenError.RuntimeError;
-            }
-
-            return self.vm.getSlot(Ret, 0);
+            return self.method.call(args);
         }
     };
 }
