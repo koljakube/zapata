@@ -28,7 +28,7 @@ pub const Receiver = struct {
     }
 
     pub fn deinit(self: Self) void {
-        wren.releaseHandle(self.vm, self.handle);
+        wren.releaseHandle(self.vm.vm, self.handle);
     }
 
     pub fn setSlot(self: Self, slot_index: u32) void {
@@ -96,7 +96,7 @@ pub const CallHandle = struct {
 
 pub fn Method(comptime Ret: anytype, comptime Args: anytype) type {
     if (@typeInfo(@TypeOf(Args)) != .Struct) {
-        @compileError("call arguments must be passed as a tuple");
+        @compileError("call argument types must be passed as a tuple");
     }
 
     return struct {
@@ -110,6 +110,9 @@ pub fn Method(comptime Ret: anytype, comptime Args: anytype) type {
         }
 
         pub fn call(self: Self, args: anytype) !Ret {
+            if (@typeInfo(@TypeOf(args)) != .Struct) {
+                @compileError("call arguments must be passed as a tuple");
+            }
             assert(args.len == Args.len);
 
             const vm = self.receiver.vm;
@@ -126,7 +129,9 @@ pub fn Method(comptime Ret: anytype, comptime Args: anytype) type {
 
             try self.call_handle.call();
 
-            return vm.getSlot(Ret, 0);
+            if (Ret != void) {
+                return vm.getSlot(Ret, 0);
+            }
         }
     };
 }
@@ -137,6 +142,7 @@ test "call a free function" {
     config.writeFn = print;
     var vm: Vm = undefined;
     try config.newVmInPlace(EmptyUserData, &vm, null);
+    defer vm.deinit();
 
     try vm.interpret("test",
         \\var add = Fn.new { |a, b|
@@ -145,7 +151,79 @@ test "call a free function" {
     );
 
     const receiver = vm.makeReceiver("test", "add");
+    defer receiver.deinit();
     const call_handle = vm.makeCallHandle("call(_,_)");
+    defer call_handle.deinit();
     const method = Method(i32, .{ i32, i32 }).init(receiver, call_handle);
     testing.expectEqual(@as(i32, 42), try method.call(.{ 23, 19 }));
+}
+
+test "call a static method" {
+    var config = Configuration{};
+    config.errorFn = printError;
+    config.writeFn = print;
+    var vm: Vm = undefined;
+    try config.newVmInPlace(EmptyUserData, &vm, null);
+    defer vm.deinit();
+
+    try vm.interpret("test",
+        \\class Foo {
+        \\  static test() {
+        \\    return "hello"
+        \\  }
+        \\}
+    );
+
+    const receiver = vm.makeReceiver("test", "Foo");
+    defer receiver.deinit();
+    const call_handle = vm.makeCallHandle("test()");
+    defer call_handle.deinit();
+    const method = Method([]const u8, .{}).init(receiver, call_handle);
+    testing.expectEqualStrings("hello", try method.call(.{}));
+}
+
+test "call an instance method" {
+    var config = Configuration{};
+    config.errorFn = printError;
+    config.writeFn = print;
+    var vm: Vm = undefined;
+    try config.newVmInPlace(EmptyUserData, &vm, null);
+    defer vm.deinit();
+
+    try vm.interpret("test",
+        \\class Multiplier {
+        \\  construct new(n) {
+        \\    _n = n
+        \\  }
+        \\  n=(n) {
+        \\    _n = n
+        \\  }
+        \\  *(m) {
+        \\    return _n * m
+        \\  }
+        \\  formatted(m) {
+        \\    return "%(_n) * %(m) = %(this * m)"
+        \\  }
+        \\}
+        \\
+        \\var mult = Multiplier.new(3)
+    );
+
+    const receiver = vm.makeReceiver("test", "mult");
+    defer receiver.deinit();
+
+    const op_times_sig = vm.makeCallHandle("*(_)");
+    defer op_times_sig.deinit();
+    const op_times = Method(i32, .{i32}).init(receiver, op_times_sig);
+    testing.expectEqual(@as(i32, 9), try op_times.call(.{3}));
+
+    const setter_sig = vm.makeCallHandle("n=(_)");
+    defer setter_sig.deinit();
+    const setter = Method(void, .{i32}).init(receiver, setter_sig);
+    try setter.call(.{5});
+
+    const formatted_sig = vm.makeCallHandle("formatted(_)");
+    defer formatted_sig.deinit();
+    const formatted = Method([]const u8, .{f32}).init(receiver, formatted_sig);
+    testing.expectEqualStrings("5 * 1.1 = 5.5", try formatted.call(.{1.1}));
 }
