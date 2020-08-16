@@ -4,9 +4,10 @@ const c = @cImport({
 
 // structs
 pub const Configuration = c.WrenConfiguration;
+pub const ErrorType = c.WrenErrorType;
+pub const ForeignClassMethods = c.WrenForeignClassMethods;
 pub const Handle = c.WrenHandle;
 pub const Vm = c.WrenVM;
-pub const ErrorType = c.WrenErrorType;
 
 // functions
 pub const call = c.wrenCall;

@@ -95,7 +95,7 @@ pub const CallHandle = struct {
 };
 
 pub fn Method(comptime Ret: anytype, comptime Args: anytype) type {
-    if (@typeInfo(@TypeOf(Args)) != .Struct) {
+    if (@typeInfo(@TypeOf(Args)) != .Struct or (@typeInfo(@TypeOf(Args)) == .Struct and !@typeInfo(@TypeOf(Args)).Struct.is_tuple)) {
         @compileError("call argument types must be passed as a tuple");
     }
 
@@ -110,7 +110,7 @@ pub fn Method(comptime Ret: anytype, comptime Args: anytype) type {
         }
 
         pub fn call(self: Self, args: anytype) !Ret {
-            if (@typeInfo(@TypeOf(args)) != .Struct) {
+            if (@typeInfo(@TypeOf(args)) != .Struct or (@typeInfo(@TypeOf(args)) == .Struct and !@typeInfo(@TypeOf(args)).Struct.is_tuple)) {
                 @compileError("call arguments must be passed as a tuple");
             }
             assert(args.len == Args.len);
