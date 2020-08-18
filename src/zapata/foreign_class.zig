@@ -80,7 +80,7 @@ fn wrapInitialize(comptime Class: type, comptime func: anytype) WrappedFn {
 
             const foreign = wren.setSlotNewForeign(cvm, 0, 0, @sizeOf(Class));
             assert(foreign != null);
-            const instance = @ptrCast(*Class, foreign);
+            const instance = @ptrCast(*Class, @alignCast(@alignOf(Class), foreign));
 
             // TODO: Can the call be deduplicated?
             const return_type = Fn.return_type.?;
@@ -352,6 +352,7 @@ pub fn ForeignClassInterface(comptime Classes: anytype) type {
                 .bindForeignClassFn = Class.bindForeignClass,
                 .bindForeignMethodFn = Class.bindForeignMethod,
             };
+            class_index += 1;
         }
     }
 
@@ -392,7 +393,7 @@ fn vmPrint(vm: *Vm, msg: []const u8) void {
 }
 
 var test_class_was_allocated = false;
-var test_class_was_allocated_with_params = false;
+var test_class_was_allocated_with_3_params = false;
 var test_class_was_called = false;
 var test_class_was_finalized = false;
 
@@ -407,7 +408,7 @@ const TestClass = struct {
     }
 
     pub fn initialize3(self: *Self, vm: *Vm, x: i32, y: i32, z: i32) !void {
-        test_class_was_allocated_with_params = true;
+        test_class_was_allocated_with_3_params = true;
     }
 
     pub fn finalize(self: *Self) void {
@@ -421,6 +422,24 @@ const TestClass = struct {
     }
 };
 
+var adder_works = false;
+
+const Adder = struct {
+    const Self = @This();
+
+    summand: u32,
+
+    pub fn initialize1(self: *Self, vm: *Vm, summand: u32) void {
+        self.summand = summand;
+    }
+
+    pub fn add(self: *Self, vm: *Vm, summand: u32) void {
+        if (self.summand == 5 and summand == 3) {
+            adder_works = true;
+        }
+    }
+};
+
 test "accessing foreign classes" {
     const allocator = std.testing.allocator;
     var config = Configuration{};
@@ -428,6 +447,7 @@ test "accessing foreign classes" {
     config.writeFn = vmPrint;
     registerForeignClasses(&config, .{
         ForeignClass("TestClass", TestClass),
+        ForeignClass("Adder", Adder),
     });
     var vm: Vm = undefined;
     try config.newVmInPlace(EmptyUserData, &vm, null);
@@ -435,12 +455,20 @@ test "accessing foreign classes" {
     try vm.interpret("test",
         \\foreign class TestClass {
         \\  construct new() {}
+        \\  construct new(a, b, c) {}
         \\  foreign call(s)
         \\}
         \\var tc = TestClass.new()
         \\tc.call("lemon")
         \\
         \\var tc2 = TestClass.new(1, 2, 3)
+        \\
+        \\foreign class Adder {
+        \\  construct new(summand) {}
+        \\  foreign add(summand)
+        \\}
+        \\var adder = Adder.new(5)
+        \\adder.add(3)
     );
 
     vm.deinit();
@@ -448,4 +476,6 @@ test "accessing foreign classes" {
     testing.expect(test_class_was_allocated);
     testing.expect(test_class_was_finalized);
     testing.expect(test_class_was_called);
+    testing.expect(test_class_was_allocated_with_3_params);
+    testing.expect(adder_works);
 }
