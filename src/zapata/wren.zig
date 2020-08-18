@@ -3,6 +3,8 @@ const c = @cImport({
 });
 
 // structs
+pub const BindForeignClassFn = c.WrenBindForeignClassFn;
+pub const BindForeignMethodFn = c.WrenBindForeignMethodFn;
 pub const Configuration = c.WrenConfiguration;
 pub const ErrorType = c.WrenErrorType;
 pub const ForeignClassMethods = c.WrenForeignClassMethods;

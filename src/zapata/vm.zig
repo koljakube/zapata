@@ -51,6 +51,8 @@ pub const Configuration = struct {
     allocator: ?*Allocator = null,
     resolveModuleFn: ?ResolveModuleFn = null,
     loadModuleFn: ?LoadModuleFn = null,
+    bindForeignClassFn: ?wren.BindForeignClassFn = null,
+    bindForeignMethodFn: ?wren.BindForeignMethodFn = null,
     writeFn: ?WriteFn = null,
     errorFn: ?ErrorFn = null,
     initialHeapSize: ?usize = null,
@@ -72,6 +74,13 @@ pub const Configuration = struct {
 
         if (self.loadModuleFn) |f| {
             cfg.loadModuleFn = wrappers.loadModuleWrapper;
+        }
+
+        if (self.bindForeignClassFn) |f| {
+            cfg.bindForeignClassFn = f;
+        }
+        if (self.bindForeignMethodFn) |f| {
+            cfg.bindForeignMethodFn = f;
         }
 
         if (self.writeFn) |f| {

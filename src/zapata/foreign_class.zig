@@ -1,11 +1,9 @@
 const std = @import("std");
 const assert = std.debug.assert;
+const print = std.debug.print;
 const testing = std.testing;
-const Allocator = std.mem.Allocator;
-const StringHashMap = std.StringHashMap;
 
 const wren = @import("./wren.zig");
-const c_wrappers = @import("./c_wrappers.zig");
 const Configuration = @import("./vm.zig").Configuration;
 const Vm = @import("./vm.zig").Vm;
 const ErrorType = @import("./vm.zig").ErrorType;
@@ -33,7 +31,7 @@ fn wrap(comptime Class: type, comptime func: anytype) WrappedFn {
                 return @call(.{}, func, args);
             } else {
                 const i = args.len;
-                const a = vm.getSlot(Fn.args[i].arg_type.?, i - arg_offset);
+                const a = vm.getSlot(Fn.args[i].arg_type.?, 1 + i - arg_offset);
                 return @call(.{ .modifier = .always_inline }, call, .{ vm, args ++ .{a} });
             }
         }
@@ -72,7 +70,7 @@ fn wrapInitialize(comptime Class: type, comptime func: anytype) WrappedFn {
                 return @call(.{}, func, args);
             } else {
                 const i = args.len;
-                const a = vm.getSlot(Fn.args[i].arg_type.?, i - arg_offset);
+                const a = vm.getSlot(Fn.args[i].arg_type.?, 1 + i - arg_offset);
                 return @call(.{ .modifier = .always_inline }, call, .{ vm, args ++ .{a} });
             }
         }
@@ -115,12 +113,10 @@ fn wrapFinalize(comptime Class: type, comptime func: anytype) WrappedFinalizeFn 
     }.thunk;
 }
 
-const MethodDesc = struct { name: []const u8, method: WrappedFn };
+const MethodDesc = struct { name: []const u8, argument_count: usize, method: WrappedFn };
 
-pub fn ForeignClass(name: []const u8, comptime Class: anytype) type {
+pub fn ForeignClass(class_name: []const u8, comptime Class: anytype) type {
     const ti = @typeInfo(Class);
-
-    const print = std.debug.print;
 
     const meta = struct {
         pub fn isInitialize(comptime decl: std.builtin.TypeInfo.Declaration) bool {
@@ -228,87 +224,162 @@ pub fn ForeignClass(name: []const u8, comptime Class: anytype) type {
         }
     };
 
+    // TODO: Check back when https://github.com/ziglang/zig/issues/6084 is fixed.
+    comptime var max_initializer_args = 0;
+    inline for (ti.Struct.decls) |decl| {
+        comptime {
+            switch (decl.data) {
+                .Fn => {
+                    if (meta.isInitialize(decl)) {
+                        const fn_type_info = @typeInfo(decl.data.Fn.fn_type);
+                        const count = fn_type_info.Fn.args.len - 2;
+                        max_initializer_args = std.math.max(max_initializer_args, @as(comptime_int, count));
+                    }
+                },
+                else => {},
+            }
+        }
+    }
+    // comptime const max_initializer_args = meta.calcMaxInitializerArgs(ti.Struct);
+    comptime var method_count = 0;
+    inline for (ti.Struct.decls) |decl| {
+        comptime {
+            switch (decl.data) {
+                .Fn => {
+                    if (meta.isMethod(decl)) {
+                        method_count += 1;
+                    }
+                },
+                else => {},
+            }
+        }
+    }
+    // comptime const method_count = meta.countInitializers(ti.Struct);
+
+    const Description = struct {
+        initializers: [max_initializer_args + 1]?WrappedFn,
+        finalizer: ?WrappedFinalizeFn,
+        methods: [method_count]MethodDesc,
+    };
+
+    // One of the zero-arg initializer.
+    comptime var initializers: [max_initializer_args + 1]WrappedFn = undefined;
+    std.mem.set(WrappedFn, initializers[0..], null);
+    comptime var finalizer: WrappedFinalizeFn = null;
+    comptime var methods: [method_count]MethodDesc = undefined;
+    comptime var method_index = 0;
+
+    inline for (ti.Struct.decls) |decl| {
+        comptime {
+            switch (decl.data) {
+                .Fn => {
+                    if (meta.isInitialize(decl)) {
+                        initializers[@typeInfo(decl.data.Fn.fn_type).Fn.args.len - 2] = wrapInitialize(Class, @field(Class, decl.name));
+                    }
+                    if (meta.isFinalize(decl)) {
+                        finalizer = wrapFinalize(Class, @field(Class, decl.name));
+                    }
+                    if (meta.isMethod(decl)) {
+                        methods[method_index] = MethodDesc{
+                            .name = decl.name,
+                            .argument_count = @typeInfo(decl.data.Fn.fn_type).Fn.args.len - 2,
+                            .method = wrap(Class, @field(Class, decl.name)),
+                        };
+                        method_index += 1;
+                    }
+                },
+                else => {},
+            }
+        }
+    }
+
     return struct {
-        pub fn printInfo() void {
-            // TODO: Check back when https://github.com/ziglang/zig/issues/6084 is fixed.
-            comptime var max_initializer_args = 0;
-            inline for (ti.Struct.decls) |decl| {
-                comptime {
-                    switch (decl.data) {
-                        .Fn => {
-                            if (meta.isInitialize(decl)) {
-                                const fn_type_info = @typeInfo(decl.data.Fn.fn_type);
-                                const count = fn_type_info.Fn.args.len - 2;
-                                max_initializer_args = std.math.max(max_initializer_args, @as(comptime_int, count));
-                            }
-                        },
-                        else => {},
-                    }
+        const name: []const u8 = class_name;
+
+        fn allocate(cvm: ?*wren.Vm) callconv(.C) void {
+            const vm = Vm.fromC(cvm);
+            // There is always one slot for the class itself.
+            // TODO: Check this is set.
+            initializers[vm.getSlotCount() - 1].?(cvm);
+        }
+
+        pub fn bindForeignClass(cvm: ?*wren.Vm, module_name: [*c]const u8, class_name_: [*c]const u8) callconv(.C) wren.ForeignClassMethods {
+            assert(std.mem.eql(u8, name, std.mem.span(class_name_)));
+            return wren.ForeignClassMethods{
+                .allocate = allocate,
+                .finalize = finalizer,
+            };
+        }
+
+        pub fn bindForeignMethod(cvm: ?*wren.Vm, module_name: [*c]const u8, class_name_: [*c]const u8, is_static: bool, signature: [*c]const u8) callconv(.C) wren.ForeignMethodFn {
+            assert(std.mem.eql(u8, name, std.mem.span(class_name_)));
+            var method_name: []const u8 = undefined;
+            method_name.ptr = signature;
+            method_name.len = 0;
+            comptime var arg_count = 0;
+            for (std.mem.span(signature)) |c, i| {
+                if (c == '(') method_name.len = i;
+                if (c == '_') arg_count += 1;
+            }
+            for (methods) |method| {
+                if (std.mem.eql(u8, method.name, std.mem.span(method_name)) and method.argument_count == arg_count) {
+                    return method.method;
                 }
             }
-            // comptime const max_initializer_args = meta.calcMaxInitializerArgs(ti.Struct);
-            comptime var method_count = 0;
-            inline for (ti.Struct.decls) |decl| {
-                comptime {
-                    switch (decl.data) {
-                        .Fn => {
-                            if (meta.isMethod(decl)) {
-                                method_count += 1;
-                            }
-                        },
-                        else => {},
-                    }
-                }
-            }
-            // comptime const method_count = meta.countInitializers(ti.Struct);
-
-            // One of the zero-arg initializer.
-            comptime var initializers: [max_initializer_args + 1]?WrappedFn = undefined;
-            comptime var finalizer: ?WrappedFinalizeFn = undefined;
-            comptime var methods: [method_count]MethodDesc = undefined;
-            comptime var method_index = 0;
-
-            inline for (ti.Struct.decls) |decl| {
-                comptime {
-                    switch (decl.data) {
-                        .Fn => {
-                            if (meta.isInitialize(decl)) {
-                                initializers[@typeInfo(decl.data.Fn.fn_type).Fn.args.len - 2] = wrapInitialize(Class, @field(Class, decl.name));
-                            }
-                            if (meta.isFinalize(decl)) {
-                                finalizer = wrapFinalize(Class, @field(Class, decl.name));
-                            }
-                            if (meta.isMethod(decl)) {
-                                methods[method_index] = MethodDesc{ .name = decl.name, .method = wrap(Class, @field(Class, decl.name)) };
-                                method_index += 1;
-                            }
-                        },
-                        else => {},
-                    }
-                }
-            }
-
-            const desc = .{ .initializers = initializers, .finalizer = finalizer, .methods = methods };
+            return null;
         }
     };
 }
 
-// pub fn registerForeignClass(config: *Configuration, name: []const u8, comptime Class: anytype) void {
-//     const allocator = config.metadata_allocator orelse std.debug.panic("registering foreign classes depends on a metadata allocator\n", .{});
-//     if (config.foreign_classes == null) {
-//         config.foreign_classes = allocator.create(ForeignClassRegistry).init(allocator);
-//     }
-//     const fcr = config.foreign_classes orelse unreachable;
-//     fcr.put(name, Foreign)
-// }
-//
-// pub fn registerForeignClasses(vm: *Vm, comptime Classes: anytype) void {
-//     if (@typeInfo(@TypeOf(Classes)) != .Struct or (@typeInfo(@TypeOf(Classes)) == .Struct and !@typeInfo(@TypeOf(Classes)).Struct.is_tuple)) {
-//         @compileError("foreign classes must be passed as a tuple");
-//     }
-//
-//     inline for (Classes) |Class| {}
-// }
+pub fn ForeignClassInterface(comptime Classes: anytype) type {
+    if (@typeInfo(@TypeOf(Classes)) != .Struct or (@typeInfo(@TypeOf(Classes)) == .Struct and !@typeInfo(@TypeOf(Classes)).Struct.is_tuple)) {
+        @compileError("foreign classes must be passed as a tuple");
+    }
+
+    const ClassDesc = struct {
+        name: []const u8,
+        bindForeignClassFn: wren.BindForeignClassFn,
+        bindForeignMethodFn: wren.BindForeignMethodFn,
+    };
+
+    comptime var classes: [Classes.len]ClassDesc = undefined;
+    comptime var class_index = 0;
+
+    comptime {
+        inline for (Classes) |Class| {
+            classes[class_index] = ClassDesc{
+                .name = Class.name,
+                .bindForeignClassFn = Class.bindForeignClass,
+                .bindForeignMethodFn = Class.bindForeignMethod,
+            };
+        }
+    }
+
+    return struct {
+        pub fn bindForeignClass(cvm: ?*wren.Vm, module_name: [*c]const u8, class_name: [*c]const u8) callconv(.C) wren.ForeignClassMethods {
+            for (classes) |class| {
+                if (std.mem.eql(u8, class.name, std.mem.span(class_name))) {
+                    return class.bindForeignClassFn.?(cvm, module_name, class_name);
+                }
+            }
+            std.debug.panic("can not bind unknown class {s}", .{class_name});
+        }
+        pub fn bindForeignMethod(cvm: ?*wren.Vm, module_name: [*c]const u8, class_name: [*c]const u8, is_static: bool, signature: [*c]const u8) callconv(.C) wren.ForeignMethodFn {
+            for (classes) |class| {
+                if (std.mem.eql(u8, class.name, std.mem.span(class_name))) {
+                    return class.bindForeignMethodFn.?(cvm, module_name, class_name, is_static, signature);
+                }
+            }
+            std.debug.panic("can not bind unknown function {s}.{s}", .{ class_name, signature });
+        }
+    };
+}
+
+pub fn registerForeignClasses(config: *Configuration, comptime Classes: anytype) void {
+    const interface = ForeignClassInterface(Classes);
+    config.bindForeignClassFn = interface.bindForeignClass;
+    config.bindForeignMethodFn = interface.bindForeignMethod;
+}
 
 const EmptyUserData = struct {};
 
@@ -321,8 +392,9 @@ fn vmPrint(vm: *Vm, msg: []const u8) void {
 }
 
 var test_class_was_allocated = false;
-var test_class_was_called: bool = false;
-var test_class_was_finalized: bool = false;
+var test_class_was_allocated_with_params = false;
+var test_class_was_called = false;
+var test_class_was_finalized = false;
 
 const TestClass = struct {
     const Self = @This();
@@ -330,19 +402,17 @@ const TestClass = struct {
     // Make the struct have a size > 0.
     data: [4]u8,
 
-    pub fn initialize(self: *Self, vm: *Vm) !void {
-        test_class_was_allocated = true;
-    }
-
     pub fn initialize0(self: *Self, vm: *Vm) !void {
         test_class_was_allocated = true;
     }
 
     pub fn initialize3(self: *Self, vm: *Vm, x: i32, y: i32, z: i32) !void {
-        test_class_was_allocated = true;
+        test_class_was_allocated_with_params = true;
     }
 
-    pub fn finalize(self: *Self) void {}
+    pub fn finalize(self: *Self) void {
+        test_class_was_finalized = true;
+    }
 
     pub fn call(self: *Self, vm: *Vm, str: []const u8) void {
         if (std.mem.eql(u8, str, "lemon")) {
@@ -353,24 +423,29 @@ const TestClass = struct {
 
 test "accessing foreign classes" {
     const allocator = std.testing.allocator;
-    // var config = Configuration{};
-    // config.metadata_allocator = allocator;
-    // config.errorFn = printError;
-    // config.writeFn = print;
-    // regsiterForeignClass(&config, "TestClass", TestClass);
-    // var vm: Vm = undefined;
-    // try config.newVmInPlace(EmptyUserData, &vm, null);
+    var config = Configuration{};
+    config.errorFn = vmPrintError;
+    config.writeFn = vmPrint;
+    registerForeignClasses(&config, .{
+        ForeignClass("TestClass", TestClass),
+    });
+    var vm: Vm = undefined;
+    try config.newVmInPlace(EmptyUserData, &vm, null);
 
-    ForeignClass("TestClass", TestClass).printInfo();
+    try vm.interpret("test",
+        \\foreign class TestClass {
+        \\  construct new() {}
+        \\  foreign call(s)
+        \\}
+        \\var tc = TestClass.new()
+        \\tc.call("lemon")
+        \\
+        \\var tc2 = TestClass.new(1, 2, 3)
+    );
 
-    // try vm.interpret("test",
-    //     \\foreign class TestClass {
-    //     \\  construct new() {}
-    //     \\  foreign call(s)
-    //     \\}
-    //     \\var tc = TestClass.new()
-    //     \\tc.call("lemon")
-    // );
-    //
-    // testing.expect(test_class_was_allocated);
+    vm.deinit();
+
+    testing.expect(test_class_was_allocated);
+    testing.expect(test_class_was_finalized);
+    testing.expect(test_class_was_called);
 }
