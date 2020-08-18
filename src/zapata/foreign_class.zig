@@ -24,17 +24,17 @@ const WrappedFinalizeFn = wren.FinalizeFn;
 // Used with permission.
 fn wrap(comptime Class: type, comptime func: anytype) WrappedFn {
     const Fn = @typeInfo(@TypeOf(func)).Fn;
-    const arg_offset = 1;
+    const arg_offset = 2;
     // See https://github.com/ziglang/zig/issues/229
     return struct {
         // See https://github.com/ziglang/zig/issues/2930
-        fn call(args: anytype, arg_offset: usize) (if (Fn.return_type) |rt| rt else void) {
+        fn call(vm: *Vm, args: anytype) (if (Fn.return_type) |rt| rt else void) {
             if (Fn.args.len == args.len) {
                 return @call(.{}, func, args);
             } else {
                 const i = args.len;
-                const a = vm.getSlot(Fn.args[i - arg_offset].arg_type.?, i);
-                return @call(.{ .modifier = .always_inline }, call, .{args ++ .{a}});
+                const a = vm.getSlot(Fn.args[i].arg_type.?, i - arg_offset);
+                return @call(.{ .modifier = .always_inline }, call, .{ vm, args ++ .{a} });
             }
         }
 
@@ -42,12 +42,17 @@ fn wrap(comptime Class: type, comptime func: anytype) WrappedFn {
             const vm = Vm.fromC(cvm);
             const instance = vm.getSlot(*Class, 0);
 
-            // TODO: Can the call be deduplicated?
-            const result = @call(.{ .modifier = .always_inline }, call, .{ vm, .{vm} });
+            const result = @call(.{ .modifier = .always_inline }, call, .{ vm, .{ instance, vm } });
             const return_type = @TypeOf(result);
             if (return_type != void) {
                 if (@typeInfo(return_type) == .ErrorUnion) {
-                    vm.abortFiber(0, @errorName(e));
+                    if (result) |success| {
+                        if (@TypeOf(success) != void) {
+                            vm.setSlot(0, success);
+                        }
+                    } else |err| {
+                        vm.abortFiber(0, @errorName(err));
+                    }
                 } else {
                     vm.setSlot(0, result);
                 }
@@ -109,6 +114,8 @@ fn wrapFinalize(comptime Class: type, comptime func: anytype) WrappedFinalizeFn 
         }
     }.thunk;
 }
+
+const MethodDesc = struct { name: []const u8, method: WrappedFn };
 
 pub fn ForeignClass(name: []const u8, comptime Class: anytype) type {
     const ti = @typeInfo(Class);
@@ -222,7 +229,8 @@ pub fn ForeignClass(name: []const u8, comptime Class: anytype) type {
     };
 
     return struct {
-        pub fn printInfo(allocator: *Allocator) void {
+        pub fn printInfo() void {
+            // TODO: Check back when https://github.com/ziglang/zig/issues/6084 is fixed.
             comptime var max_initializer_args = 0;
             inline for (ti.Struct.decls) |decl| {
                 comptime {
@@ -254,16 +262,10 @@ pub fn ForeignClass(name: []const u8, comptime Class: anytype) type {
             }
             // comptime const method_count = meta.countInitializers(ti.Struct);
 
-            const Method = struct { name: []const u8, method: WrappedFn };
-            const ClassMetadata = struct {
-                initializers: [max_initializer_args + 1]?WrappedFn = undefined,
-                finalizer: ?WrappedFinalizeFn,
-                methods: [method_count]Method,
-            };
             // One of the zero-arg initializer.
             comptime var initializers: [max_initializer_args + 1]?WrappedFn = undefined;
             comptime var finalizer: ?WrappedFinalizeFn = undefined;
-            comptime var methods: [method_count]Method = undefined;
+            comptime var methods: [method_count]MethodDesc = undefined;
             comptime var method_index = 0;
 
             inline for (ti.Struct.decls) |decl| {
@@ -277,7 +279,7 @@ pub fn ForeignClass(name: []const u8, comptime Class: anytype) type {
                                 finalizer = wrapFinalize(Class, @field(Class, decl.name));
                             }
                             if (meta.isMethod(decl)) {
-                                methods[method_index] = Method{ .name = decl.name, .method = wrap(Class, @field(Class, decl.name)) };
+                                methods[method_index] = MethodDesc{ .name = decl.name, .method = wrap(Class, @field(Class, decl.name)) };
                                 method_index += 1;
                             }
                         },
@@ -285,6 +287,8 @@ pub fn ForeignClass(name: []const u8, comptime Class: anytype) type {
                     }
                 }
             }
+
+            const desc = .{ .initializers = initializers, .finalizer = finalizer, .methods = methods };
         }
     };
 }
@@ -357,7 +361,7 @@ test "accessing foreign classes" {
     // var vm: Vm = undefined;
     // try config.newVmInPlace(EmptyUserData, &vm, null);
 
-    ForeignClass("TestClass", TestClass).printInfo(allocator);
+    ForeignClass("TestClass", TestClass).printInfo();
 
     // try vm.interpret("test",
     //     \\foreign class TestClass {
