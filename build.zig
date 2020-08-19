@@ -1,4 +1,5 @@
-const Builder = @import("std").build.Builder;
+const std = @import("std");
+const Builder = std.build.Builder;
 
 pub fn build(b: *Builder) void {
     const mode = b.standardReleaseOptions();
@@ -6,15 +7,21 @@ pub fn build(b: *Builder) void {
     lib.setBuildMode(mode);
     lib.install();
 
-    lib.addIncludeDir("vendor/wren/include");
-    lib.addLibPath("vendor/wren/lib");
+    const has_vendored_wren = if (std.fs.cwd().access("vendor/wren", .{ .read = true })) |_| true else |_| false;
+
+    if (has_vendored_wren) {
+        lib.addIncludeDir("vendor/wren/include");
+        lib.addLibPath("vendor/wren/lib");
+    }
     lib.linkSystemLibrary("wren");
 
     var main_tests = b.addTest("src/main.zig");
     main_tests.setBuildMode(mode);
 
-    main_tests.addIncludeDir("vendor/wren/include");
-    main_tests.addLibPath("vendor/wren/lib");
+    if (has_vendored_wren) {
+        main_tests.addIncludeDir("vendor/wren/include");
+        main_tests.addLibPath("vendor/wren/lib");
+    }
     main_tests.linkSystemLibrary("wren");
 
     const test_step = b.step("test", "Run library tests");
