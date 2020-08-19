@@ -166,12 +166,25 @@ pub fn ForeignClass(class_name: []const u8, comptime Class: anytype) type {
             return true;
         }
 
-        pub fn isMethod(comptime decl: std.builtin.TypeInfo.Declaration) bool {
+        pub fn isInstanceMethod(comptime decl: std.builtin.TypeInfo.Declaration) bool {
             if (isInitialize(decl) or isFinalize(decl)) return false;
 
             const fn_type_info = @typeInfo(decl.data.Fn.fn_type);
             // At least self and vm must be present.
             if (fn_type_info.Fn.args.len < 2) return false;
+            if (fn_type_info.Fn.args[0].arg_type.? != *Class) return false;
+            if (fn_type_info.Fn.args[1].arg_type.? != *Vm) return false;
+
+            return true;
+        }
+
+        pub fn isStaticMethod(comptime decl: std.builtin.TypeInfo.Declaration) bool {
+            if (isInitialize(decl) or isFinalize(decl)) return false;
+
+            const fn_type_info = @typeInfo(decl.data.Fn.fn_type);
+            // At least the vm must be present.
+            if (fn_type_info.Fn.args.len < 1) return false;
+            if (fn_type_info.Fn.args[0].arg_type.? != *Vm) return false;
 
             return true;
         }
@@ -208,12 +221,27 @@ pub fn ForeignClass(class_name: []const u8, comptime Class: anytype) type {
             return max;
         }
 
-        pub fn countMethods(comptime strct: std.builtin.TypeInfo.Struct) comptime_int {
+        pub fn countInstanceMethods(comptime strct: std.builtin.TypeInfo.Struct) comptime_int {
             comptime var method_count = 0;
             inline for (strct.decls) |decl| {
                 switch (decl.data) {
                     .Fn => {
-                        if (isMethod(decl)) {
+                        if (isInstanceMethod(decl)) {
+                            method_count += 1;
+                        }
+                    },
+                    else => {},
+                }
+            }
+            return method_count;
+        }
+
+        pub fn countStaticMethods(comptime strct: std.builtin.TypeInfo.Struct) comptime_int {
+            comptime var method_count = 0;
+            inline for (strct.decls) |decl| {
+                switch (decl.data) {
+                    .Fn => {
+                        if (isStaticMethod(decl)) {
                             method_count += 1;
                         }
                     },
@@ -241,33 +269,43 @@ pub fn ForeignClass(class_name: []const u8, comptime Class: anytype) type {
         }
     }
     // comptime const max_initializer_args = meta.calcMaxInitializerArgs(ti.Struct);
-    comptime var method_count = 0;
+    comptime var instance_method_count = 0;
     inline for (ti.Struct.decls) |decl| {
         comptime {
             switch (decl.data) {
                 .Fn => {
-                    if (meta.isMethod(decl)) {
-                        method_count += 1;
+                    if (meta.isInstanceMethod(decl)) {
+                        instance_method_count += 1;
                     }
                 },
                 else => {},
             }
         }
     }
-    // comptime const method_count = meta.countInitializers(ti.Struct);
-
-    const Description = struct {
-        initializers: [max_initializer_args + 1]?WrappedFn,
-        finalizer: ?WrappedFinalizeFn,
-        methods: [method_count]MethodDesc,
-    };
+    // comptime const instance_method_count = meta.countInstanceMethods(ti.Struct);
+    comptime var static_method_count = 0;
+    inline for (ti.Struct.decls) |decl| {
+        comptime {
+            switch (decl.data) {
+                .Fn => {
+                    if (meta.isStaticMethod(decl)) {
+                        static_method_count += 1;
+                    }
+                },
+                else => {},
+            }
+        }
+        // comptime const static_method_count = meta.countStaticMethods(ti.Struct);
+    }
 
     // One of the zero-arg initializer.
     comptime var initializers: [max_initializer_args + 1]WrappedFn = undefined;
     std.mem.set(WrappedFn, initializers[0..], null);
     comptime var finalizer: WrappedFinalizeFn = null;
-    comptime var methods: [method_count]MethodDesc = undefined;
-    comptime var method_index = 0;
+    comptime var instance_methods: [instance_method_count]MethodDesc = undefined;
+    comptime var instance_method_index = 0;
+    comptime var static_methods: [static_method_count]MethodDesc = undefined;
+    comptime var static_method_index = 0;
 
     inline for (ti.Struct.decls) |decl| {
         comptime {
@@ -279,13 +317,21 @@ pub fn ForeignClass(class_name: []const u8, comptime Class: anytype) type {
                     if (meta.isFinalize(decl)) {
                         finalizer = wrapFinalize(Class, @field(Class, decl.name));
                     }
-                    if (meta.isMethod(decl)) {
-                        methods[method_index] = MethodDesc{
+                    if (meta.isInstanceMethod(decl)) {
+                        instance_methods[instance_method_index] = MethodDesc{
                             .name = decl.name,
                             .argument_count = @typeInfo(decl.data.Fn.fn_type).Fn.args.len - 2,
                             .method = wrap(Class, @field(Class, decl.name)),
                         };
-                        method_index += 1;
+                        instance_method_index += 1;
+                    }
+                    if (meta.isStaticMethod(decl)) {
+                        static_methods[static_method_index] = MethodDesc{
+                            .name = decl.name,
+                            .argument_count = @typeInfo(decl.data.Fn.fn_type).Fn.args.len - 1,
+                            .method = wrap(Class, @field(Class, decl.name)),
+                        };
+                        static_method_index += 1;
                     }
                 },
                 else => {},
@@ -321,6 +367,11 @@ pub fn ForeignClass(class_name: []const u8, comptime Class: anytype) type {
                 if (c == '(') method_name.len = i;
                 if (c == '_') arg_count += 1;
             }
+
+            print("class_name = {s}\n", .{class_name_});
+            print("static_methods.len = {}\n", .{static_methods.len});
+
+            const methods = if (is_static) static_methods else instance_methods;
             for (methods) |method| {
                 if (std.mem.eql(u8, method.name, std.mem.span(method_name)) and method.argument_count == arg_count) {
                     return method.method;
@@ -440,14 +491,24 @@ const Adder = struct {
     }
 };
 
+const Namespace = struct {
+    pub fn multiply(vm: *Vm, a: i32, b: i32) i32 {
+        if (a == 6 and b == 9) {
+            return 42;
+        }
+        return a * b;
+    }
+};
+
 test "accessing foreign classes" {
     const allocator = std.testing.allocator;
     var config = Configuration{};
     config.errorFn = vmPrintError;
     config.writeFn = vmPrint;
-    registerForeignClasses(&config, .{
+    config.registerForeignClasses(.{
         ForeignClass("TestClass", TestClass),
         ForeignClass("Adder", Adder),
+        ForeignClass("Namespace", Namespace),
     });
     var vm: Vm = undefined;
     try config.newVmInPlace(EmptyUserData, &vm, null);
@@ -469,7 +530,17 @@ test "accessing foreign classes" {
         \\}
         \\var adder = Adder.new(5)
         \\adder.add(3)
+        \\
+        \\foreign class Namespace {
+        \\  foreign static multiply(a, b)
+        \\}
+        \\
+        \\var product = Namespace.multiply(6, 9)
     );
+
+    vm.getVariable("test", "product", 0);
+    const product = vm.getSlot(i32, 0);
+    testing.expectEqual(@as(i32, 42), product);
 
     vm.deinit();
 
