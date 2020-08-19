@@ -205,8 +205,10 @@ pub const Vm = struct {
                 comptime const cti = @typeInfo(ti.Pointer.child);
                 if (cti == .Array and cti.Array.child == u8) {
                     wren.setSlotBytes(self.vm, @intCast(c_int, slot_index), @ptrCast([*c]const u8, value), value.*.len);
+                } else if (cti == .Int and !cti.Int.is_signed and cti.Int.bits == 8) {
+                    wren.setSlotBytes(self.vm, @intCast(c_int, slot_index), @ptrCast([*c]const u8, value), value.len);
                 } else {
-                    @compileError("only pointers to u8 arrays are allowed");
+                    @compileError("only pointers to u8 arrays are allowed, found " ++ @typeName(@TypeOf(value)));
                 }
             },
             .Null => wren.setSlotNull(self.vm, @intCast(c_int, slot_index)),
