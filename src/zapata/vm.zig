@@ -51,11 +51,15 @@ pub const Configuration = struct {
     allocator: ?*Allocator = null,
     resolveModuleFn: ?ResolveModuleFn = null,
     loadModuleFn: ?LoadModuleFn = null,
+    bindForeignClassFn: ?wren.BindForeignClassFn = null,
+    bindForeignMethodFn: ?wren.BindForeignMethodFn = null,
     writeFn: ?WriteFn = null,
     errorFn: ?ErrorFn = null,
     initialHeapSize: ?usize = null,
     minHeapSize: ?usize = null,
     heapGrowthPercent: ?u8 = null,
+
+    const registerForeignClasses = @import("./foreign_class.zig").registerForeignClasses;
 
     // This will be much nicer when https://github.com/ziglang/zig/issues/2765 is done.
     pub fn newVmInPlace(self: Self, comptime UserData: type, result: *Vm, user_data: ?*UserData) WrenError!void {
@@ -72,6 +76,13 @@ pub const Configuration = struct {
 
         if (self.loadModuleFn) |f| {
             cfg.loadModuleFn = wrappers.loadModuleWrapper;
+        }
+
+        if (self.bindForeignClassFn) |f| {
+            cfg.bindForeignClassFn = f;
+        }
+        if (self.bindForeignMethodFn) |f| {
+            cfg.bindForeignMethodFn = f;
         }
 
         if (self.writeFn) |f| {
@@ -130,6 +141,12 @@ pub const Vm = struct {
 
     pub fn deinit(self: *Self) void {
         wren.freeVm(self.vm);
+    }
+
+    pub fn fromC(vm: ?*wren.Vm) *Vm {
+        const udptr = wren.getUserData(vm);
+        assert(udptr != null);
+        return @ptrCast(*Vm, @alignCast(@alignOf(*Vm), udptr));
     }
 
     fn registerWithWren(self: *Self) void {
@@ -221,9 +238,14 @@ pub const Vm = struct {
                     assert(handle != null);
                     return @ptrCast(T, handle);
                 }
+                if (ti.Pointer.child != u8) {
+                    assert(slot_type == .Foreign);
+                    const ptr = wren.getSlotForeign(self.vm, slot);
+                    return @ptrCast(*ti.Pointer.child, @alignCast(@alignOf(ti.Pointer.child), ptr));
+                }
                 assert(slot_type == .String);
                 if (ti.Pointer.child != u8 or !ti.Pointer.is_const) {
-                    @compileError("strings can only be retrieved as []u8 const");
+                    @compileError("strings can only be retrieved as []u8 const, got " ++ @typeName(T));
                 }
                 var slice: []const u8 = undefined;
                 var len: c_int = undefined;
@@ -249,6 +271,11 @@ pub const Vm = struct {
 
     pub const makeReceiver = @import("./call.zig").Receiver.init;
     pub const makeCallHandle = @import("./call.zig").CallHandle.init;
+
+    pub fn abortFiber(self: *Self, slot_index: u32, value: anytype) void {
+        self.setSlot(slot_index, value);
+        wren.abortFiber(self.vm, @intCast(c_int, slot_index));
+    }
 };
 
 fn printError(vm: *Vm, error_type: ErrorType, module: ?[]const u8, line: ?u32, message: []const u8) void {

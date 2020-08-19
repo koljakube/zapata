@@ -95,7 +95,7 @@ pub const CallHandle = struct {
 };
 
 pub fn Method(comptime Ret: anytype, comptime Args: anytype) type {
-    if (@typeInfo(@TypeOf(Args)) != .Struct) {
+    if (@typeInfo(@TypeOf(Args)) != .Struct or (@typeInfo(@TypeOf(Args)) == .Struct and !@typeInfo(@TypeOf(Args)).Struct.is_tuple)) {
         @compileError("call argument types must be passed as a tuple");
     }
 
@@ -110,7 +110,7 @@ pub fn Method(comptime Ret: anytype, comptime Args: anytype) type {
         }
 
         pub fn call(self: Self, args: anytype) !Ret {
-            if (@typeInfo(@TypeOf(args)) != .Struct) {
+            if (@typeInfo(@TypeOf(args)) != .Struct or (@typeInfo(@TypeOf(args)) == .Struct and !@typeInfo(@TypeOf(args)).Struct.is_tuple)) {
                 @compileError("call arguments must be passed as a tuple");
             }
             assert(args.len == Args.len);
@@ -226,4 +226,33 @@ test "call an instance method" {
     defer formatted_sig.deinit();
     const formatted = Method([]const u8, .{f32}).init(receiver, formatted_sig);
     testing.expectEqualStrings("5 * 1.1 = 5.5", try formatted.call(.{1.1}));
+}
+
+test "non-comptime identifiers" {
+    var config = Configuration{};
+    config.errorFn = printError;
+    config.writeFn = print;
+    var vm: Vm = undefined;
+    try config.newVmInPlace(EmptyUserData, &vm, null);
+    defer vm.deinit();
+
+    try vm.interpret("test",
+        \\class Foo {
+        \\  static test() {
+        \\    return "hello"
+        \\  }
+        \\}
+    );
+
+    var identifier: [4]u8 = [_]u8{ 'F', 'o', 'o', 0 };
+    var id = identifier[0..];
+    const receiver = vm.makeReceiver("test", id);
+    defer receiver.deinit();
+
+    var signature = "test()";
+    var sig = signature[0..];
+    const call_handle = vm.makeCallHandle(sig);
+    defer call_handle.deinit();
+    const method = Method([]const u8, .{}).init(receiver, call_handle);
+    testing.expectEqualStrings("hello", try method.call(.{}));
 }
