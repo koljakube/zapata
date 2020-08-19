@@ -1,4 +1,3 @@
-pub usingnamespace @import("./zapata/allocator_wrapper.zig");
 pub usingnamespace @import("./zapata/call.zig");
 pub usingnamespace @import("./zapata/error.zig");
 pub usingnamespace @import("./zapata/foreign.zig");
