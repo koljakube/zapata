@@ -1,4 +1,4 @@
-usingnamespace @import("./zapata.zig");
+pub usingnamespace @import("./zapata.zig");
 
 test "" {
     _ = @import("./zapata.zig");

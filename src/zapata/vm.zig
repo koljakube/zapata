@@ -59,7 +59,7 @@ pub const Configuration = struct {
     minHeapSize: ?usize = null,
     heapGrowthPercent: ?u8 = null,
 
-    const registerForeignClasses = @import("./foreign_class.zig").registerForeignClasses;
+    const registerForeignClasses = @import("./foreign.zig").registerForeignClasses;
 
     // This will be much nicer when https://github.com/ziglang/zig/issues/2765 is done.
     pub fn newVmInPlace(self: Self, comptime UserData: type, result: *Vm, user_data: ?*UserData) WrenError!void {
