@@ -20,9 +20,22 @@ const WrappedFinalizeFn = wren.FinalizeFn;
 // "Inspired" by
 // https://github.com/daurnimator/zig-autolua/blob/5bc7194124a7d7a14e6efe5033c75c7ad4b19cb8/src/autolua.zig#L185-L210
 // Used with permission.
-fn wrap(comptime Class: type, comptime func: anytype) WrappedFn {
+const WrapMode = enum { Initialize, Instance, Static, Finalize };
+fn wrap(comptime Class: type, comptime func: anytype, wrap_mode: WrapMode) switch (wrap_mode) {
+    .Finalize => WrappedFinalizeFn,
+    else => WrappedFn,
+} {
     const Fn = @typeInfo(@TypeOf(func)).Fn;
-    const arg_offset = 2;
+
+    const ThunkArg = switch (wrap_mode) {
+        .Finalize => ?*c_void,
+        else => ?*wren.Vm,
+    };
+    const slot_offset = switch (wrap_mode) {
+        .Instance, .Initialize => 2,
+        .Static => 1,
+        .Finalize => 0,
+    };
     // See https://github.com/ziglang/zig/issues/229
     return struct {
         // See https://github.com/ziglang/zig/issues/2930
@@ -31,84 +44,81 @@ fn wrap(comptime Class: type, comptime func: anytype) WrappedFn {
                 return @call(.{}, func, args);
             } else {
                 const i = args.len;
-                const a = vm.getSlot(Fn.args[i].arg_type.?, 1 + i - arg_offset);
+                // Add 1 for the class itself in slot 0.
+                const a = vm.getSlot(Fn.args[i].arg_type.?, 1 + i - slot_offset);
                 return @call(.{ .modifier = .always_inline }, call, .{ vm, args ++ .{a} });
             }
         }
 
-        fn thunk(cvm: ?*wren.Vm) callconv(.C) void {
-            const vm = Vm.fromC(cvm);
-            const instance = vm.getSlot(*Class, 0);
+        fn thunk(arg: ThunkArg) callconv(.C) void {
+            const ResultHandler = struct {
+                const Self = @This();
 
-            const result = @call(.{ .modifier = .always_inline }, call, .{ vm, .{ instance, vm } });
-            const return_type = @TypeOf(result);
-            if (return_type != void) {
-                if (@typeInfo(return_type) == .ErrorUnion) {
-                    if (result) |success| {
-                        if (@TypeOf(success) != void) {
-                            vm.setSlot(0, success);
+                maybe_vm: ?*Vm,
+
+                pub fn noop(self: Self, ignored: anytype) void {}
+
+                pub fn handle(self: Self, result: anytype) void {
+                    if (self.maybe_vm) |vm| {
+                        const return_type = @TypeOf(result);
+                        if (return_type != void) {
+                            if (@typeInfo(return_type) == .ErrorUnion) {
+                                if (result) |success| {
+                                    if (@TypeOf(success) != void) {
+                                        vm.setSlot(0, success);
+                                    }
+                                } else |err| {
+                                    vm.abortFiber(0, @errorName(err));
+                                }
+                            } else {
+                                vm.setSlot(0, result);
+                            }
                         }
-                    } else |err| {
-                        vm.abortFiber(0, @errorName(err));
+                    } else {
+                        std.debug.panic("vm must be set", .{});
                     }
-                } else {
-                    vm.setSlot(0, result);
                 }
+            };
+
+            const call_target = switch (wrap_mode) {
+                .Finalize => func,
+                else => call,
+            };
+
+            const result_handler = switch (wrap_mode) {
+                .Finalize => ResultHandler{ .maybe_vm = null },
+                else => ResultHandler{ .maybe_vm = Vm.fromC(arg) },
+            };
+            const result_handler_fn = switch (wrap_mode) {
+                .Finalize => result_handler.noop,
+                else => result_handler.handle,
+            };
+
+            // Initially, this switch defined `initial_args` (the tuple in `@call`).
+            // This failed to compile with the following error:
+            // error: compiler bug: generating const value for struct field '0'
+            switch (wrap_mode) {
+                .Initialize => {
+                    const vm = Vm.fromC(arg);
+                    const foreign = wren.setSlotNewForeign(arg, 0, 0, @sizeOf(Class));
+                    assert(foreign != null);
+                    const instance = @ptrCast(*Class, @alignCast(@alignOf(Class), foreign));
+                    result_handler_fn(@call(.{ .modifier = .always_inline }, call_target, .{ vm, .{ instance, vm } }));
+                },
+                .Finalize => {
+                    const instance = @ptrCast(*Class, arg);
+                    result_handler_fn(@call(.{ .modifier = .always_inline }, call_target, .{instance}));
+                },
+                .Instance => {
+                    const vm = Vm.fromC(arg);
+                    const instance = vm.getSlot(*Class, 0);
+                    result_handler_fn(@call(.{ .modifier = .always_inline }, call_target, .{ vm, .{ instance, vm } }));
+                },
+                .Static => {
+                    const vm = Vm.fromC(arg);
+                    result_handler_fn(@call(.{ .modifier = .always_inline }, call_target, .{ vm, .{vm} }));
+                },
             }
-        }
-    }.thunk;
-}
-fn wrapInitialize(comptime Class: type, comptime func: anytype) WrappedFn {
-    const Fn = @typeInfo(@TypeOf(func)).Fn;
-
-    const arg_offset = 2;
-    // See https://github.com/ziglang/zig/issues/229
-    return struct {
-        // See https://github.com/ziglang/zig/issues/2930
-        fn call(vm: *Vm, args: anytype) (if (Fn.return_type) |rt| rt else void) {
-            if (Fn.args.len == args.len) {
-                return @call(.{}, func, args);
-            } else {
-                const i = args.len;
-                const a = vm.getSlot(Fn.args[i].arg_type.?, 1 + i - arg_offset);
-                return @call(.{ .modifier = .always_inline }, call, .{ vm, args ++ .{a} });
-            }
-        }
-
-        fn thunk(cvm: ?*wren.Vm) callconv(.C) void {
-            const vm = Vm.fromC(cvm);
-
-            const foreign = wren.setSlotNewForeign(cvm, 0, 0, @sizeOf(Class));
-            assert(foreign != null);
-            const instance = @ptrCast(*Class, @alignCast(@alignOf(Class), foreign));
-
-            // TODO: Can the call be deduplicated?
-            const return_type = Fn.return_type.?;
-            if (@typeInfo(return_type) == .ErrorUnion) {
-                const result = @call(.{ .modifier = .always_inline }, call, .{ vm, .{ instance, vm } }) catch |e| {
-                    vm.abortFiber(0, @errorName(e));
-                    return;
-                };
-                if (@typeInfo(return_type).ErrorUnion.payload != void) {
-                    vm.setSlot(0, result);
-                }
-            } else {
-                const result = @call(.{ .modifier = .always_inline }, call, .{ vm, .{ instance, vm } });
-                if (return_type != void) {
-                    vm.setSlot(0, result);
-                }
-            }
-        }
-    }.thunk;
-}
-fn wrapFinalize(comptime Class: type, comptime func: anytype) WrappedFinalizeFn {
-    const Fn = @typeInfo(@TypeOf(func)).Fn;
-
-    // See https://github.com/ziglang/zig/issues/229
-    return struct {
-        fn thunk(ptr: ?*c_void) callconv(.C) void {
-            const instance = @ptrCast(*Class, ptr);
-            const result = @call(.{ .modifier = .always_inline }, func, .{instance});
         }
     }.thunk;
 }
@@ -312,16 +322,16 @@ pub fn ForeignClass(class_name: []const u8, comptime Class: anytype) type {
             switch (decl.data) {
                 .Fn => {
                     if (meta.isInitialize(decl)) {
-                        initializers[@typeInfo(decl.data.Fn.fn_type).Fn.args.len - 2] = wrapInitialize(Class, @field(Class, decl.name));
+                        initializers[@typeInfo(decl.data.Fn.fn_type).Fn.args.len - 2] = wrap(Class, @field(Class, decl.name), .Initialize);
                     }
                     if (meta.isFinalize(decl)) {
-                        finalizer = wrapFinalize(Class, @field(Class, decl.name));
+                        finalizer = wrap(Class, @field(Class, decl.name), .Finalize);
                     }
                     if (meta.isInstanceMethod(decl)) {
                         instance_methods[instance_method_index] = MethodDesc{
                             .name = decl.name,
                             .argument_count = @typeInfo(decl.data.Fn.fn_type).Fn.args.len - 2,
-                            .method = wrap(Class, @field(Class, decl.name)),
+                            .method = wrap(Class, @field(Class, decl.name), .Instance),
                         };
                         instance_method_index += 1;
                     }
@@ -329,7 +339,7 @@ pub fn ForeignClass(class_name: []const u8, comptime Class: anytype) type {
                         static_methods[static_method_index] = MethodDesc{
                             .name = decl.name,
                             .argument_count = @typeInfo(decl.data.Fn.fn_type).Fn.args.len - 1,
-                            .method = wrap(Class, @field(Class, decl.name)),
+                            .method = wrap(Class, @field(Class, decl.name), .Static),
                         };
                         static_method_index += 1;
                     }
@@ -362,16 +372,13 @@ pub fn ForeignClass(class_name: []const u8, comptime Class: anytype) type {
             var method_name: []const u8 = undefined;
             method_name.ptr = signature;
             method_name.len = 0;
-            comptime var arg_count = 0;
+            var arg_count: usize = 0;
             for (std.mem.span(signature)) |c, i| {
                 if (c == '(') method_name.len = i;
-                if (c == '_') arg_count += 1;
+                if (c == '_') arg_count = arg_count + 1;
             }
 
-            print("class_name = {s}\n", .{class_name_});
-            print("static_methods.len = {}\n", .{static_methods.len});
-
-            const methods = if (is_static) static_methods else instance_methods;
+            const methods = if (is_static) &static_methods else &instance_methods;
             for (methods) |method| {
                 if (std.mem.eql(u8, method.name, std.mem.span(method_name)) and method.argument_count == arg_count) {
                     return method.method;
@@ -538,6 +545,7 @@ test "accessing foreign classes" {
         \\var product = Namespace.multiply(6, 9)
     );
 
+    vm.ensureSlots(1);
     vm.getVariable("test", "product", 0);
     const product = vm.getSlot(i32, 0);
     testing.expectEqual(@as(i32, 42), product);
