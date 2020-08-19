@@ -233,7 +233,7 @@ pub const Vm = struct {
             .Pointer => {
                 const slot_type = self.getSlotType(slot_index);
                 if (ti.Pointer.child == wren.Handle) {
-                    assert(slot_type == .Unknown);
+                    assert(slot_type == .Unknown or slot_type == .Foreign);
                     const handle = wren.getSlotHandle(self.vm, slot);
                     assert(handle != null);
                     return @ptrCast(T, handle);
